@@ -240,6 +240,10 @@ impl AppClient {
                                         "Failed to resume playback after reconnect: {err:#}"
                                     );
                                 }
+                            } else if let Err(err) =
+                                client.restore_saved_playback(&state, &device_id).await
+                            {
+                                tracing::warn!("Failed to restore the saved playback: {err:#}");
                             }
                             // upon new connection, reset the buffered playback
                             state.player.write().buffered_playback = None;
@@ -464,6 +468,48 @@ impl AppClient {
         }
 
         Ok(Some(playback))
+    }
+
+    /// Restore the previous session's playback on a device, paused, if Spotify has none to resume
+    async fn restore_saved_playback(&self, state: &SharedState, device_id: &str) -> Result<()> {
+        let Some(saved) = state.player.write().saved_playback.take() else {
+            return Ok(());
+        };
+
+        // the playback Spotify resumes on transfer takes a moment to show up
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        self.retrieve_current_playback(state, true).await?;
+        if state.player.read().currently_playing().is_some() {
+            return Ok(());
+        }
+
+        let tracks_id = state.player.read().currently_playing_tracks_id.clone();
+        let playback = saved
+            .playback(
+                &state.data.read(),
+                tracks_id.as_ref(),
+                config::get_config().app_config.tracks_playback_limit,
+            )
+            .context("no playback to restore")?;
+        let volume = self
+            .available_devices()
+            .await?
+            .into_iter()
+            .find(|d| d.id.as_deref() == Some(device_id))
+            .and_then(|d| d.volume_percent);
+
+        // Spotify can't start a playback paused, so it starts muted and is paused right away
+        if volume.is_some() {
+            self.volume(0, Some(device_id)).await?;
+        }
+        self.start_playback(playback, Some(device_id)).await?;
+        self.pause_playback(Some(device_id)).await?;
+        self.seek_track(saved.progress(), Some(device_id)).await?;
+        if let Some(volume) = volume {
+            self.volume(volume as u8, Some(device_id)).await?;
+        }
+        tracing::info!("Restored the previous session's playback");
+        Ok(())
     }
 
     /// Handle a client request

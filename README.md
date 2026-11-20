@@ -263,7 +263,7 @@ Control Spotify remotely with [Spotify Connect](https://support.spotify.com/us/a
 
 ### Session
 
-The app reopens on the pages that were open when it was closed, with the same selections. A context the app played without Spotify knowing it, such as a radio or the liked tracks, stays the playing context across restarts.
+The app reopens on the pages that were open when it was closed, with the same selections. A context the app played without Spotify knowing it, such as a radio or the liked tracks, stays the playing context across restarts. When Spotify has no playback to resume on startup, the previous one is restored paused at the same position.
 
 ### Streaming
 

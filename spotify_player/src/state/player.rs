@@ -1,5 +1,6 @@
 use super::model::{ContextId, Device, PlaybackMetadata, TracksId};
 use super::queue::CustomQueue;
+use super::session::SavedPlayback;
 
 /// Player state
 #[derive(Default, Debug)]
@@ -21,6 +22,9 @@ pub struct PlayerState {
     /// Active when the integrated librespot player is streaming and the user
     /// started playback from a track-table context.
     pub custom_queue: Option<CustomQueue>,
+
+    /// Playback of the previous session, restored at startup when Spotify has no playback to resume
+    pub saved_playback: Option<SavedPlayback>,
 }
 
 impl PlayerState {
