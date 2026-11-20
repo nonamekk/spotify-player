@@ -29,6 +29,7 @@ use rspotify::{http::Query, prelude::*};
 mod handlers;
 mod middleware;
 mod request;
+mod soloist;
 mod spotify;
 
 pub use handlers::*;
@@ -487,7 +488,7 @@ impl AppClient {
         if !config::get_config().app_config.take_over_playback || is_chosen {
             return Ok(());
         }
-        let Some(name) = config::get_config().app_config.preferred_device.clone() else {
+        let Some(name) = preferred_device() else {
             return Ok(());
         };
         if playback.device_name == name {
@@ -936,7 +937,7 @@ impl AppClient {
         }
 
         // Prioritize the preferred device, then the integrated device; otherwise, use the first available device.
-        let preferred = config::get_config().app_config.preferred_device.clone();
+        let preferred = preferred_device();
         let id = devices
             .iter()
             .position(|d| Some(&d.name) == preferred.as_ref())
@@ -2139,6 +2140,15 @@ impl AppClient {
 
         albums
     }
+}
+
+/// The `preferred_device`, else the Soloist device running on this machine
+fn preferred_device() -> Option<String> {
+    config::get_config()
+        .app_config
+        .preferred_device
+        .clone()
+        .or_else(soloist::local_device_name)
 }
 
 fn move_seed_track_to_front(tracks: &mut Vec<Track>, seed_track: Track) {

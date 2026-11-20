@@ -152,6 +152,7 @@ pub struct AppConfig {
     pub pause_on_startup: bool,
 
     /// Name of the Spotify Connect device to use when no device is active.
+    /// Unset: the Spotify Soloist device running on this machine, if any.
     pub preferred_device: Option<String>,
 
     /// Move playback to `preferred_device` before running a playback command from this app.

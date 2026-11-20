@@ -261,7 +261,7 @@ After changing the client ID, re-run `spotify_player authenticate` to refresh th
 
 Control Spotify remotely with [Spotify Connect](https://support.spotify.com/us/article/spotify-connect/). Press **D** to list devices, then **enter** to connect.
 
-The app connects to `preferred_device` on startup when no device is active, and with `take_over_playback` (on by default) a playback command from the app moves the playback to it first.
+The app connects to `preferred_device` on startup when no device is active, and with `take_over_playback` (on by default) a playback command from the app moves the playback to it first. Unset, it's the Spotify Soloist device running on this machine (the name of its `-n` argument), if any.
 
 ### Session
 
