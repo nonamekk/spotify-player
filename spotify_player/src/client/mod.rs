@@ -2211,7 +2211,13 @@ impl AppClient {
             track_or_episode.clone()
         };
 
-        // retrieve current artist for genres if not in cache
+        #[cfg_attr(not(feature = "notify"), allow(unused_variables))]
+        let Some(path) = self.load_cover(state, &curr_item).await?
+        else {
+            return Ok(());
+        };
+
+        // retrieve current artist for genres if not in cache, after the cover so it doesn't wait for it
         let curr_artist = match &curr_item {
             rspotify::model::PlayableItem::Track(full_track) => {
                 let cached = state
@@ -2230,8 +2236,7 @@ impl AppClient {
                     }
                 }
             }
-            rspotify::model::PlayableItem::Episode(_)
-            | rspotify::model::PlayableItem::Unknown(_) => None,
+            _ => None,
         };
 
         if let Some(artist) = curr_artist {
@@ -2244,12 +2249,6 @@ impl AppClient {
                 );
             }
         }
-
-        #[cfg_attr(not(feature = "notify"), allow(unused_variables))]
-        let Some(path) = self.load_cover(state, &curr_item).await?
-        else {
-            return Ok(());
-        };
 
         // notify user about the playback's change if any
         #[cfg(all(feature = "notify", feature = "streaming"))]
