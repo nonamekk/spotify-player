@@ -137,6 +137,38 @@ impl State {
             .map(rspotify::model::PlayableItem::Track)
     }
 
+    /// Up to `count` tracks before the playing one in its context, the nearest first, as they
+    /// would show when played
+    pub fn tracks_before_current(&self, count: usize) -> Vec<rspotify::model::PlayableItem> {
+        let Some((context_id, current)) = ({
+            let player = self.player.read();
+            let current = player
+                .currently_playing()
+                .and_then(rspotify::model::PlayableItem::id);
+            player.playing_context_id().zip(current.map(|id| id.uri()))
+        }) else {
+            return Vec::new();
+        };
+        let before: Vec<Track> = {
+            let data = self.data.read();
+            let Some(tracks) = data.context_tracks(&context_id) else {
+                return Vec::new();
+            };
+            let i = tracks
+                .iter()
+                .position(|t| t.id.uri() == current)
+                .unwrap_or(0);
+            tracks[..i].iter().rev().take(count).cloned().collect()
+        };
+
+        let records = played_history::records(&config::get_config().cache_folder);
+        before
+            .iter()
+            .filter_map(|t| played_history::track_to_show(&records, &t.id, Some(t)))
+            .map(rspotify::model::PlayableItem::Track)
+            .collect()
+    }
+
     /// Select the playing track in the page shown, if it lists it: a resumed page comes back with
     /// the selection it had, while the device may have played on since
     pub fn select_playing_track(&self) {

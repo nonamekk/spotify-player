@@ -829,7 +829,13 @@ impl AppClient {
             }
             ClientRequest::GetCurrentUserQueue => {
                 let queue = self.current_user_queue2().await?;
-                state.player.write().set_queue(queue);
+                let upcoming: Vec<_> = {
+                    let mut player = state.player.write();
+                    player.set_queue(queue);
+                    let queued = player.queue.iter().flat_map(|queue| &queue.queue);
+                    queued.take(COVER_AHEAD).cloned().collect()
+                };
+                self.preload_covers(state, &upcoming).await;
             }
             ClientRequest::ReorderPlaylistItems {
                 playlist_id,
@@ -2074,8 +2080,127 @@ impl AppClient {
         Ok(())
     }
 
+    /// The cover of `item`: its URL and its file in the cache folder, `None` without one
+    fn cover_location(
+        item: &rspotify::model::PlayableItem,
+    ) -> Option<(String, std::path::PathBuf)> {
+        let url = match item {
+            rspotify::model::PlayableItem::Track(track) => {
+                crate::utils::get_track_album_image_url(track)?
+            }
+            rspotify::model::PlayableItem::Episode(episode) => {
+                crate::utils::get_episode_show_image_url(episode)?
+            }
+            rspotify::model::PlayableItem::Unknown(_) => return None,
+        };
+
+        let filename = (match item {
+            rspotify::model::PlayableItem::Track(track) => {
+                format!(
+                    "{}-{}-cover-{}.jpg",
+                    track.album.name,
+                    track.album.artists.first()?.name,
+                    // first 6 characters of the album's id
+                    &track.album.id.as_ref()?.id()[..6]
+                )
+            }
+            #[allow(deprecated)]
+            rspotify::model::PlayableItem::Episode(episode) => {
+                format!(
+                    "{}-{}-cover-{}.jpg",
+                    episode.show.name,
+                    episode.show.publisher,
+                    // first 6 characters of the show's id
+                    &episode.show.id.as_ref().id()[..6]
+                )
+            }
+            rspotify::model::PlayableItem::Unknown(_) => return None,
+        })
+        .replace('/', ""); // remove invalid characters from the file's name
+        let path = config::get_config()
+            .cache_folder
+            .join("image")
+            .join(filename);
+        Some((url.to_owned(), path))
+    }
+
+    /// Load the covers around the playing track ahead of their playing: those of the next queued
+    /// tracks (`upcoming`) and of up to `COVER_BACK` previous ones in its context, nearest first,
+    /// `COVER_BATCH` either way at a time
+    async fn preload_covers(
+        &self,
+        state: &SharedState,
+        upcoming: &[rspotify::model::PlayableItem],
+    ) {
+        let previous = state.tracks_before_current(COVER_BACK);
+        let (mut ahead, mut back) = (upcoming.chunks(COVER_BATCH), previous.chunks(COVER_BATCH));
+        loop {
+            let batch: Vec<_> = ahead
+                .next()
+                .into_iter()
+                .chain(back.next())
+                .flatten()
+                .collect();
+            if batch.is_empty() {
+                return;
+            }
+            let loads = batch.into_iter().map(|item| self.load_cover(state, item));
+            for result in futures::future::join_all(loads).await {
+                if let Err(err) = result {
+                    tracing::warn!("Failed to load a cover ahead: {err:#}");
+                }
+            }
+        }
+    }
+
+    /// Load the cover of `item` into the cache folder and the image cache, unless it's there.
+    /// Returns its file's path, `None` for an item without one.
+    #[cfg_attr(not(feature = "image"), allow(unused_variables))]
+    async fn load_cover(
+        &self,
+        state: &SharedState,
+        curr_item: &rspotify::model::PlayableItem,
+    ) -> Result<Option<std::path::PathBuf>> {
+        let configs = config::get_config();
+        let Some((url, path)) = Self::cover_location(curr_item) else {
+            return Ok(None);
+        };
+        let url = url.as_str();
+
+        if configs.app_config.enable_cover_image_cache {
+            self.retrieve_image(url, &path, true).await?;
+        }
+
+        #[cfg(feature = "image")]
+        if !state.data.read().caches.images.contains_key(url) {
+            let bytes = self.retrieve_image(url, &path, false).await?;
+
+            #[cfg(not(feature = "pixelate"))]
+            let image =
+                image::load_from_memory(&bytes).context("Failed to load image from memory")?;
+            #[cfg(feature = "pixelate")]
+            let mut image =
+                image::load_from_memory(&bytes).context("Failed to load image from memory")?;
+
+            #[cfg(feature = "pixelate")]
+            {
+                Self::pixelate_image(&mut image);
+            }
+
+            state
+                .data
+                .write()
+                .caches
+                .images
+                .insert(url.to_owned(), image, *TTL_CACHE_DURATION);
+        }
+
+        Ok(Some(path))
+    }
+
     // Handle new track event
     async fn handle_new_playback_event(&self, state: &SharedState) -> Result<()> {
+        #[cfg_attr(not(feature = "notify"), allow(unused_variables))]
         let configs = config::get_config();
 
         let curr_item = {
@@ -2120,70 +2245,11 @@ impl AppClient {
             }
         }
 
-        let url = match curr_item {
-            rspotify::model::PlayableItem::Track(ref track) => {
-                crate::utils::get_track_album_image_url(track)
-                    .ok_or(anyhow::anyhow!("missing image"))?
-            }
-            rspotify::model::PlayableItem::Episode(ref episode) => {
-                crate::utils::get_episode_show_image_url(episode)
-                    .ok_or(anyhow::anyhow!("missing image"))?
-            }
-            rspotify::model::PlayableItem::Unknown(_) => return Ok(()),
+        #[cfg_attr(not(feature = "notify"), allow(unused_variables))]
+        let Some(path) = self.load_cover(state, &curr_item).await?
+        else {
+            return Ok(());
         };
-
-        let filename = (match curr_item {
-            rspotify::model::PlayableItem::Track(ref track) => {
-                format!(
-                    "{}-{}-cover-{}.jpg",
-                    track.album.name,
-                    track.album.artists.first().unwrap().name,
-                    // first 6 characters of the album's id
-                    &track.album.id.as_ref().unwrap().id()[..6]
-                )
-            }
-            #[allow(deprecated)]
-            rspotify::model::PlayableItem::Episode(ref episode) => {
-                format!(
-                    "{}-{}-cover-{}.jpg",
-                    episode.show.name,
-                    episode.show.publisher,
-                    // first 6 characters of the show's id
-                    &episode.show.id.as_ref().id()[..6]
-                )
-            }
-            rspotify::model::PlayableItem::Unknown(_) => return Ok(()),
-        })
-        .replace('/', ""); // remove invalid characters from the file's name
-        let path = configs.cache_folder.join("image").join(filename);
-
-        if configs.app_config.enable_cover_image_cache {
-            self.retrieve_image(url, &path, true).await?;
-        }
-
-        #[cfg(feature = "image")]
-        if !state.data.read().caches.images.contains_key(url) {
-            let bytes = self.retrieve_image(url, &path, false).await?;
-
-            #[cfg(not(feature = "pixelate"))]
-            let image =
-                image::load_from_memory(&bytes).context("Failed to load image from memory")?;
-            #[cfg(feature = "pixelate")]
-            let mut image =
-                image::load_from_memory(&bytes).context("Failed to load image from memory")?;
-
-            #[cfg(feature = "pixelate")]
-            {
-                Self::pixelate_image(&mut image);
-            }
-
-            state
-                .data
-                .write()
-                .caches
-                .images
-                .insert(url.to_owned(), image, *TTL_CACHE_DURATION);
-        }
 
         // notify user about the playback's change if any
         #[cfg(all(feature = "notify", feature = "streaming"))]
@@ -2385,6 +2451,12 @@ impl AppClient {
         albums
     }
 }
+
+/// Next and previous tracks whose covers are loaded ahead of their playing (about 1.2 MB each)
+const COVER_AHEAD: usize = 15;
+const COVER_BACK: usize = 10;
+/// Covers loaded at a time either way, the nearest tracks' first
+const COVER_BATCH: usize = 3;
 
 /// The playback and queue shown before a player request showed the track it plays
 type ShownBefore = (
