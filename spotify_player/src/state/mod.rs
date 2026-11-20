@@ -74,6 +74,69 @@ impl State {
         }
     }
 
+    /// The track a Previous goes back to: the one before the current track in its known,
+    /// unshuffled context, as this device last played it
+    pub fn previous_track(&self) -> Option<rspotify::model::PlayableItem> {
+        let (context_id, current) = {
+            let player = self.player.read();
+            if player.current_playback()?.shuffle_state {
+                return None;
+            }
+            let current = player.currently_playing()?.id()?.uri();
+            (player.playing_context_id()?, current)
+        };
+        let previous = {
+            let data = self.data.read();
+            let tracks = data.context_tracks(&context_id)?;
+            let i = tracks.iter().position(|t| t.id.uri() == current)?;
+            tracks.get(i.checked_sub(1)?)?.clone()
+        };
+        let records = played_history::records(&config::get_config().cache_folder);
+        played_history::track_to_show(&records, &previous.id, Some(&previous))
+            .map(rspotify::model::PlayableItem::Track)
+    }
+
+    /// The track a playback starts, to show before Spotify reports it: a queued one as Spotify
+    /// has it, else as the played history and the list it starts from have it
+    pub fn started_track(&self, playback: &Playback) -> Option<rspotify::model::PlayableItem> {
+        use rspotify::model::Offset;
+        let (context_id, uri) = match playback {
+            Playback::Context(id, Some(Offset::Uri(uri))) => (Some(id.clone()), uri.clone()),
+            Playback::URIs(ids, offset) => {
+                let uri = match offset {
+                    Some(Offset::Uri(uri)) => uri.clone(),
+                    None => ids.first()?.uri(),
+                    Some(_) => return None,
+                };
+                let tracks_id = self.player.read().currently_playing_tracks_id.clone();
+                (tracks_id.map(ContextId::Tracks), uri)
+            }
+            Playback::Context(..) => return None,
+        };
+
+        let queued = self.player.read().queue.as_ref().and_then(|queue| {
+            queue
+                .queue
+                .iter()
+                .find(|item| item.id().is_some_and(|id| id.uri() == uri))
+                .cloned()
+        });
+        if queued.is_some() {
+            return queued;
+        }
+        let id = TrackId::from_uri(&uri).ok()?.into_static();
+        let track = context_id.and_then(|context_id| {
+            let data = self.data.read();
+            data.context_tracks(&context_id)?
+                .iter()
+                .find(|t| t.id == id)
+                .cloned()
+        });
+        let records = played_history::records(&config::get_config().cache_folder);
+        played_history::track_to_show(&records, &id, track.as_ref())
+            .map(rspotify::model::PlayableItem::Track)
+    }
+
     /// Select the playing track in the page shown, if it lists it: a resumed page comes back with
     /// the selection it had, while the device may have played on since
     pub fn select_playing_track(&self) {

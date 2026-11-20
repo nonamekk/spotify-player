@@ -168,6 +168,9 @@ pub struct Album {
     pub artists: Vec<Artist>,
     pub typ: Option<rspotify::model::AlbumType>,
     pub added_at: u64,
+    /// URL of the album's largest cover image
+    #[serde(default)]
+    pub cover: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -481,6 +484,7 @@ impl Album {
                     _ => None,
                 }),
             added_at: 0,
+            cover: album.images.into_iter().next().map(|image| image.url),
         })
     }
 
@@ -511,6 +515,7 @@ impl From<rspotify::model::FullAlbum> for Album {
             artists: from_simplified_artists_to_artists(album.artists),
             typ: Some(album.album_type),
             added_at: 0,
+            cover: album.images.into_iter().next().map(|image| image.url),
         }
     }
 }

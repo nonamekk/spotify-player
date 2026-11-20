@@ -640,6 +640,7 @@ impl AppClient {
                 state.data.write().user_data.user = Some(user);
             }
             ClientRequest::Player(request) => {
+                let shown_before = show_requested_track(state, &request);
                 let result = {
                     // the next request starts from the playback this one leaves
                     let _in_order = self.player_request_order.lock().await;
@@ -650,8 +651,19 @@ impl AppClient {
                     }
                     result
                 };
-                result?;
+                if let Err(err) = result {
+                    if let Some((playback, queue)) = shown_before {
+                        let mut player = state.player.write();
+                        (player.playback, player.queue) = (playback, queue);
+                        player.requested = None;
+                    }
+                    return Err(err);
+                }
                 self.update_playback_non_blocking(state);
+                // the check for a new playback won't see the shown track as new: load its cover now
+                if shown_before.is_some() {
+                    self.handle_new_playback_event(state).await?;
+                }
             }
             ClientRequest::GetCurrentPlayback => {
                 self.retrieve_current_playback(state, true).await?;
@@ -817,7 +829,7 @@ impl AppClient {
             }
             ClientRequest::GetCurrentUserQueue => {
                 let queue = self.current_user_queue2().await?;
-                state.player.write().queue = Some(queue);
+                state.player.write().set_queue(queue);
             }
             ClientRequest::ReorderPlaylistItems {
                 playlist_id,
@@ -2002,7 +2014,11 @@ impl AppClient {
             // update the playback state
             let playback = self.current_playback2().await?;
             let mut player = state.player.write();
-
+            // a track shown on request stays until Spotify has it too
+            if player.is_before_request(playback.as_ref().and_then(|p| p.item.as_ref())) {
+                tracing::debug!("Spotify still reports a track before the requested one");
+                return Ok(());
+            }
             let prev_item = player.currently_playing();
 
             let prev_name = match prev_item {
@@ -2370,6 +2386,39 @@ impl AppClient {
     }
 }
 
+/// The playback and queue shown before a player request showed the track it plays
+type ShownBefore = (
+    Option<rspotify::model::CurrentPlaybackContext>,
+    Option<rspotify::model::CurrentUserQueue>,
+);
+
+/// Show the track a player request plays right away, before Spotify reports it. Returns what was
+/// shown before, to put back if the request fails, or `None` when it shows nothing new.
+fn show_requested_track(state: &SharedState, request: &PlayerRequest) -> Option<ShownBefore> {
+    let (previous, started) = match request {
+        PlayerRequest::NextTrack => (None, None),
+        PlayerRequest::PreviousTrack => (state.previous_track(), None),
+        PlayerRequest::StartPlayback(playback, _) => (None, Some(state.started_track(playback)?)),
+        _ => return None,
+    };
+
+    let mut player = state.player.write();
+    let before = (player.playback.clone(), player.queue.clone());
+    let shown = match request {
+        PlayerRequest::NextTrack => player.skip_to_queued(),
+        PlayerRequest::PreviousTrack => player.skip_back(previous),
+        _ => started.is_some_and(|item| player.show_skipped_to(item)),
+    };
+    if shown {
+        player.mark_requested(before.0.as_ref().and_then(|p| p.item.as_ref()));
+    }
+    tracing::debug!(
+        "{request:?} shown before Spotify has it: {shown}, {:?}",
+        player.requested
+    );
+    shown.then_some(before)
+}
+
 /// The `preferred_device`, else the Soloist device running on this machine
 fn preferred_device() -> Option<String> {
     config::get_config()
@@ -2520,6 +2569,15 @@ where
     let Some(cached) = cached.slots().filter(|slots| !slots.is_empty()) else {
         return Ok(LikedRefresh::FetchAll);
     };
+    // a cache from before albums kept their cover is requested again once, to have them
+    let has_covers = cached
+        .iter()
+        .flatten()
+        .next()
+        .is_some_and(|t| t.album.as_ref().is_some_and(|a| a.cover.is_some()));
+    if !has_covers {
+        return Ok(LikedRefresh::FetchAll);
+    }
     let cached_keys = liked_keys(&cached);
 
     let mut newest = Vec::new();
@@ -2753,7 +2811,7 @@ mod tests {
         check_liked_tracks, liked_tracks_up_to_date, liked_unchanged, move_seed_track_to_front,
         parse_current_playback_response, LikedPage, LikedTracks, Pace,
     };
-    use crate::state::Track;
+    use crate::state::{Album, AlbumId, Track};
     use rspotify::model::{Id, PlayableItem, TrackId};
 
     fn sample_track(id: &'static str, name: &str) -> Track {
@@ -2806,7 +2864,19 @@ mod tests {
     }
 
     fn liked_track(i: usize) -> Track {
-        sample_track(Box::leak(format!("{i:0>22}").into_boxed_str()), "liked")
+        let mut track = sample_track(Box::leak(format!("{i:0>22}").into_boxed_str()), "liked");
+        track.album = Some(Album {
+            id: AlbumId::from_id("4aawyAB9vmqN3uQ7FjRGTy")
+                .unwrap()
+                .into_static(),
+            release_date: String::new(),
+            name: String::new(),
+            artists: vec![],
+            typ: None,
+            added_at: 0,
+            cover: Some("https://i.scdn.co/image/cover".to_string()),
+        });
+        track
     }
 
     fn ids(items: &[Option<Track>]) -> Vec<Option<TrackId<'static>>> {
@@ -2894,6 +2964,24 @@ mod tests {
         old.total += 1;
 
         let (liked, requests) = refresh_against(&old, &spotify).await;
+        assert_eq!(ids(&liked.slots().expect("slots")), ids(&spotify));
+        assert_eq!(requests, 3);
+    }
+
+    #[tokio::test]
+    async fn a_cache_from_before_covers_requests_everything_once() {
+        let spotify: Vec<_> = (0..120).map(|i| Some(liked_track(i))).collect();
+        let without_covers: Vec<_> = spotify
+            .iter()
+            .flatten()
+            .map(|t| {
+                let mut t = t.clone();
+                t.album = None;
+                Some(t)
+            })
+            .collect();
+
+        let (liked, requests) = refresh_against(&cached(&without_covers), &spotify).await;
         assert_eq!(ids(&liked.slots().expect("slots")), ids(&spotify));
         assert_eq!(requests, 3);
     }

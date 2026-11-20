@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use anyhow::{Context as _, Result};
-use rspotify::model::FullTrack;
+use rspotify::model::{FullTrack, Id, TrackId};
 use serde_json::json;
 use soloist_history::{Record, COVER_PX, COVER_URL, FILE_NAME};
 
@@ -73,6 +73,46 @@ fn newest_tracks(records: Vec<Record>, min_listened_ms: u64) -> Vec<Track> {
             Some(track)
         })
         .collect()
+}
+
+/// The played history's records, oldest first; none when there is no played history
+pub fn records(cache_folder: &Path) -> Vec<Record> {
+    load(cache_folder).ok().flatten().unwrap_or_default()
+}
+
+/// The track `id` as the played history `records` last have it, else `track` (from a list) with
+/// its album's cover, or the cover the history has for that album
+pub fn track_to_show(records: &[Record], id: &TrackId, track: Option<&Track>) -> Option<FullTrack> {
+    if let Some(record) = records.iter().rev().find(|r| r.id == id.id()) {
+        return full_track(record);
+    }
+
+    let track = track?;
+    let album = track.album.as_ref()?;
+    let cover = album
+        .cover
+        .as_deref()
+        .and_then(|url| url.strip_prefix(COVER_URL))
+        .map(str::to_owned)
+        .or_else(|| {
+            let played = records.iter().rev().find(|r| r.album_id == album.id.id());
+            played.and_then(|r| r.cover.clone())
+        });
+    full_track(&Record {
+        id: track.id.id().to_owned(),
+        name: track.name.clone(),
+        artists: track
+            .artists
+            .iter()
+            .map(|a| (a.id.id().to_owned(), a.name.clone()))
+            .collect(),
+        album_id: album.id.id().to_owned(),
+        album: album.name.clone(),
+        cover,
+        duration_ms: track.duration.as_millis() as u64,
+        explicit: track.explicit,
+        ..Record::default()
+    })
 }
 
 #[cfg(test)]
