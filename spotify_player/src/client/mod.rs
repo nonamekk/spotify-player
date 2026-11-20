@@ -1721,6 +1721,7 @@ impl AppClient {
         if !new_playback {
             return Ok(());
         }
+        state.forget_stale_playing_tracks();
         self.handle_new_playback_event(state).await?;
 
         Ok(())

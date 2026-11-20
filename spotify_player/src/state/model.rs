@@ -51,6 +51,16 @@ pub struct TracksId {
     pub kind: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+/// A Tracks context played from this app.
+///
+/// Spotify reports no context for its playback, so it is kept to show the context again after a restart.
+pub struct PlayingTracks {
+    pub id: TracksId,
+    pub desc: String,
+    pub tracks: Vec<Track>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// A context Id
 pub enum ContextId {
@@ -298,6 +308,24 @@ fn play_time(tracks: &[Track]) -> String {
 }
 
 impl ContextId {
+    /// The ID of a context reported by Spotify, if it is a supported context type
+    pub fn from_context(context: &rspotify::model::Context) -> Option<Self> {
+        let uri = crate::utils::parse_uri(&context.uri);
+        Some(match context._type {
+            rspotify::model::Type::Playlist => {
+                Self::Playlist(PlaylistId::from_uri(&uri).ok()?.into_static())
+            }
+            rspotify::model::Type::Album => {
+                Self::Album(AlbumId::from_uri(&uri).ok()?.into_static())
+            }
+            rspotify::model::Type::Artist => {
+                Self::Artist(ArtistId::from_uri(&uri).ok()?.into_static())
+            }
+            rspotify::model::Type::Show => Self::Show(ShowId::from_uri(&uri).ok()?.into_static()),
+            _ => return None,
+        })
+    }
+
     pub fn uri(&self) -> String {
         match self {
             Self::Album(id) => id.uri(),

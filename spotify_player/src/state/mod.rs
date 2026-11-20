@@ -50,12 +50,13 @@ impl State {
             ui.theme = theme;
         }
 
-        let app_data = AppData::new(&configs.cache_folder);
-        session::restore(&mut ui, &configs.cache_folder);
+        let mut player = PlayerState::default();
+        let mut app_data = AppData::new(&configs.cache_folder);
+        session::restore(&mut ui, &mut player, &mut app_data, &configs.cache_folder);
 
         Self {
             ui: Mutex::new(ui),
-            player: RwLock::new(PlayerState::default()),
+            player: RwLock::new(player),
             data: RwLock::new(app_data),
             is_daemon,
             #[cfg(feature = "streaming")]
@@ -68,6 +69,30 @@ impl State {
             },
 
             logs: log_buffer,
+        }
+    }
+
+    /// Forget the playing Tracks context once Spotify plays something outside of it
+    pub fn forget_stale_playing_tracks(&self) {
+        let (id, uri) = {
+            let player = self.player.read();
+            let item_uri = player
+                .currently_playing()
+                .and_then(rspotify::model::PlayableItem::id)
+                .map(|id| id.uri());
+            match (player.currently_playing_tracks_id.clone(), item_uri) {
+                (Some(id), Some(uri)) => (id, uri),
+                _ => return,
+            }
+        };
+
+        let is_stale = self
+            .data
+            .read()
+            .context_tracks(&ContextId::Tracks(id))
+            .is_some_and(|tracks| tracks.iter().all(|t| t.id.uri() != uri));
+        if is_stale {
+            self.player.write().currently_playing_tracks_id = None;
         }
     }
 

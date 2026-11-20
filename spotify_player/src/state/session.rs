@@ -1,4 +1,4 @@
-//! The application's session: the open pages, kept across restarts.
+//! The application's session: the open pages and the playing list, kept across restarts.
 
 use std::path::Path;
 use std::time::Duration;
@@ -6,8 +6,8 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    load_data_from_file_cache, store_data_into_file_cache, FileCacheKey, PageState, SharedState,
-    UIState,
+    load_data_from_file_cache, store_data_into_file_cache, AppData, FileCacheKey, PageState,
+    PlayerState, PlayingTracks, SharedState, TracksId, UIState,
 };
 use crate::config;
 
@@ -27,11 +27,23 @@ impl Session {
 }
 
 /// Restore the previous session into the state of a starting application
-pub fn restore(ui: &mut UIState, cache_folder: &Path) {
+pub fn restore(
+    ui: &mut UIState,
+    player: &mut PlayerState,
+    data: &mut AppData,
+    cache_folder: &Path,
+) {
     let session: Session =
         load_data_from_file_cache(FileCacheKey::Session, cache_folder).unwrap_or_default();
     if !session.history.is_empty() {
         ui.history = session.history;
+    }
+
+    let playing: Option<PlayingTracks> =
+        load_data_from_file_cache(FileCacheKey::PlayingTracks, cache_folder).flatten();
+    if let Some(playing) = playing {
+        player.currently_playing_tracks_id = Some(playing.id.clone());
+        data.restore_playing_tracks(playing);
     }
 }
 
@@ -47,9 +59,25 @@ fn store_session(session: &Session) {
     }
 }
 
+/// Store the Tracks context being played, kept in memory for as long as it plays
+fn store_playing_tracks(state: &SharedState, id: Option<&TracksId>) {
+    let playing = id.and_then(|id| {
+        let mut data = state.data.write();
+        data.caches.keep_playing_context(&id.uri);
+        data.playing_tracks(id)
+    });
+    let cache_folder = &config::get_config().cache_folder;
+    if let Err(err) =
+        store_data_into_file_cache(FileCacheKey::PlayingTracks, cache_folder, &playing)
+    {
+        tracing::error!("Failed to store the playing tracks: {err:#}");
+    }
+}
+
 /// Store the session whenever it changes, so it survives the application being killed
 pub fn start_session_saver(state: &SharedState) {
     let mut stored = Session::default();
+    let mut stored_tracks_id = state.player.read().currently_playing_tracks_id.clone();
 
     loop {
         std::thread::sleep(SAVE_INTERVAL);
@@ -63,6 +91,12 @@ pub fn start_session_saver(state: &SharedState) {
             stored = session;
         }
         drop(ui);
+
+        let tracks_id = state.player.read().currently_playing_tracks_id.clone();
+        if tracks_id != stored_tracks_id {
+            store_playing_tracks(state, tracks_id.as_ref());
+            stored_tracks_id = tracks_id;
+        }
     }
 }
 

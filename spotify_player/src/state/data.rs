@@ -5,8 +5,8 @@ use serde::{de::DeserializeOwned, Serialize};
 use std::sync::LazyLock;
 
 use super::model::{
-    Album, Artist, Category, Context, ContextId, Id, Playlist, PlaylistFolderItem,
-    PlaylistFolderNode, SearchResults, Show, Track,
+    Album, Artist, Category, Context, ContextId, Id, PlayingTracks, Playlist, PlaylistFolderItem,
+    PlaylistFolderNode, SearchResults, Show, Track, TracksId,
 };
 use super::Lyrics;
 
@@ -21,11 +21,16 @@ pub enum FileCacheKey {
     SavedAlbums,
     SavedTracks,
     Session,
+    PlayingTracks,
 }
 
 /// default time-to-live cache duration
 pub static TTL_CACHE_DURATION: LazyLock<std::time::Duration> =
     LazyLock::new(|| std::time::Duration::from_hours(1));
+
+/// time-to-live of a context while it's being played: a Tracks context such as a radio
+/// can't be fetched again with the same tracks
+const PLAYING_CONTEXT_TTL: std::time::Duration = std::time::Duration::from_hours(24 * 30);
 
 /// the application's data
 pub struct AppData {
@@ -117,6 +122,14 @@ impl MemoryCaches {
             _ => None,
         }
     }
+
+    /// Keep a context in the cache for as long as it's being played
+    pub fn keep_playing_context(&mut self, uri: &str) {
+        if let Some(context) = self.context.remove(uri) {
+            self.context
+                .insert(uri.to_string(), context, PLAYING_CONTEXT_TTL);
+        }
+    }
 }
 
 impl AppData {
@@ -158,6 +171,27 @@ impl AppData {
                 return None;
             }
         })
+    }
+
+    pub fn playing_tracks(&self, id: &TracksId) -> Option<PlayingTracks> {
+        match self.caches.context.get(&id.uri)? {
+            Context::Tracks { tracks, desc } => Some(PlayingTracks {
+                id: id.clone(),
+                desc: desc.clone(),
+                tracks: tracks.clone(),
+            }),
+            _ => None,
+        }
+    }
+
+    pub fn restore_playing_tracks(&mut self, playing: PlayingTracks) {
+        let context = Context::Tracks {
+            tracks: playing.tracks,
+            desc: playing.desc,
+        };
+        self.caches
+            .context
+            .insert(playing.id.uri, context, PLAYING_CONTEXT_TTL);
     }
 }
 

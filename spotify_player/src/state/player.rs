@@ -1,6 +1,4 @@
-use super::model::{
-    AlbumId, ArtistId, ContextId, Device, PlaybackMetadata, PlaylistId, ShowId, TracksId,
-};
+use super::model::{ContextId, Device, PlaybackMetadata, TracksId};
 use super::queue::CustomQueue;
 
 /// Player state
@@ -82,24 +80,7 @@ impl PlayerState {
     pub fn playing_context_id(&self) -> Option<ContextId> {
         match self.playback {
             Some(ref playback) => match playback.context {
-                Some(ref context) => {
-                    let uri = crate::utils::parse_uri(&context.uri);
-                    match context._type {
-                        rspotify::model::Type::Playlist => Some(ContextId::Playlist(
-                            PlaylistId::from_uri(&uri).ok()?.into_static(),
-                        )),
-                        rspotify::model::Type::Album => Some(ContextId::Album(
-                            AlbumId::from_uri(&uri).ok()?.into_static(),
-                        )),
-                        rspotify::model::Type::Artist => Some(ContextId::Artist(
-                            ArtistId::from_uri(&uri).ok()?.into_static(),
-                        )),
-                        rspotify::model::Type::Show => {
-                            Some(ContextId::Show(ShowId::from_uri(&uri).ok()?.into_static()))
-                        }
-                        _ => None,
-                    }
-                }
+                Some(ref context) => ContextId::from_context(context),
                 None => self
                     .custom_queue
                     .as_ref()
