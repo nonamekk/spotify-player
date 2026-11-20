@@ -191,6 +191,19 @@ pub fn handle_cli_subcommand(cmd: &str, args: &ArgMatches) -> Result<()> {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(crate::auth::prompt_for_user_token(&mut api_client, true))
                 .context("authenticate Spotify Web API client")?;
+            // the cached library and session of another account would show as this one's
+            match rt.block_on(rspotify::prelude::OAuthClient::current_user(&api_client)) {
+                Ok(user) => {
+                    if crate::state::forget_other_account(&configs.cache_folder, &user)
+                        .context("forget the previous account's cached data")?
+                    {
+                        println!("Logged in to another account: its cached library and session are cleared.");
+                    }
+                }
+                Err(err) => eprintln!(
+                    "Couldn't check which account logged in, so the cached data is kept: {err:#}"
+                ),
+            }
 
             let auth_config = AuthConfig::new(configs)?;
             crate::auth::get_creds(&auth_config, true, false)?;

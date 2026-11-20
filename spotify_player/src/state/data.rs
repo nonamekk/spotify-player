@@ -331,9 +331,82 @@ where
     }
 }
 
+/// The cache files of an account's own data, which after a switch to another account would show
+/// as the new account's
+const ACCOUNT_CACHES: [FileCacheKey; 10] = [
+    FileCacheKey::CurrentUser,
+    FileCacheKey::Playlists,
+    FileCacheKey::PlaylistFolders,
+    FileCacheKey::FollowedArtists,
+    FileCacheKey::SavedShows,
+    FileCacheKey::SavedAlbums,
+    FileCacheKey::SavedTracks,
+    FileCacheKey::LikedTracks,
+    FileCacheKey::Session,
+    FileCacheKey::PlayingTracks,
+];
+
+/// Delete the cached data of the account cached so far when `user` is another account, then
+/// cache `user`. Returns whether anything was deleted.
+pub fn forget_other_account(
+    cache_folder: &Path,
+    user: &rspotify::model::PrivateUser,
+) -> std::io::Result<bool> {
+    let cached: Option<rspotify::model::PrivateUser> =
+        load_data_from_file_cache(FileCacheKey::CurrentUser, cache_folder);
+    // without a cached account, whose the other files are is unknown
+    let other = cached.is_none_or(|cached| cached.id != user.id);
+    if other {
+        for key in ACCOUNT_CACHES {
+            match std::fs::remove_file(cache_folder.join(format!("{key:?}_cache.json"))) {
+                Err(err) if err.kind() != std::io::ErrorKind::NotFound => return Err(err),
+                _ => {}
+            }
+        }
+    }
+    store_data_into_file_cache(FileCacheKey::CurrentUser, cache_folder, user)?;
+    Ok(other)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{MemoryCaches, SearchCacheEntry, SearchResults};
+    use super::{
+        forget_other_account, store_data_into_file_cache, FileCacheKey, MemoryCaches,
+        SearchCacheEntry, SearchResults,
+    };
+
+    fn account(id: &str) -> rspotify::model::PrivateUser {
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "external_urls": {},
+            "href": format!("https://api.spotify.com/v1/users/{id}"),
+        }))
+        .expect("a user")
+    }
+
+    #[test]
+    fn another_account_forgets_the_previous_accounts_caches() {
+        let dir =
+            std::env::temp_dir().join(format!("spotify-player-account-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cached = |key: FileCacheKey| dir.join(format!("{key:?}_cache.json")).exists();
+        store_data_into_file_cache(FileCacheKey::CurrentUser, &dir, &account("first")).unwrap();
+        store_data_into_file_cache(FileCacheKey::Playlists, &dir, &Vec::<u8>::new()).unwrap();
+        store_data_into_file_cache(FileCacheKey::Radios, &dir, &Vec::<u8>::new()).unwrap();
+
+        // the same account again (a renewed login) keeps everything
+        assert!(!forget_other_account(&dir, &account("first")).unwrap());
+        assert!(cached(FileCacheKey::Playlists));
+
+        assert!(forget_other_account(&dir, &account("second")).unwrap());
+        assert!(!cached(FileCacheKey::Playlists));
+        // radios aren't an account's data
+        assert!(cached(FileCacheKey::Radios));
+        // the new account is cached right away
+        assert!(!forget_other_account(&dir, &account("second")).unwrap());
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn search_lifecycle_suppresses_duplicate_requests() {
