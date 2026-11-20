@@ -1074,6 +1074,68 @@ impl AppClient {
         Ok(shown)
     }
 
+    /// Keep the liked tracks, and so the liked marks, current in the background: once shortly
+    /// after startup, then every few minutes while nothing plays (`liked_refresh_delay_secs` and
+    /// `liked_refresh_interval_mins`). Likes and unlikes made in this app update the cache
+    /// themselves; this catches the ones made in other apps.
+    pub async fn refresh_liked_tracks_while_idle(&self, state: &SharedState) {
+        let app_config = &config::get_config().app_config;
+        let delay = std::time::Duration::from_secs(app_config.liked_refresh_delay_secs);
+        // `from_mins` would panic on a huge value
+        let interval = std::time::Duration::from_secs(
+            app_config.liked_refresh_interval_mins.saturating_mul(60),
+        );
+        tokio::time::sleep(delay).await;
+        loop {
+            if let Err(err) = self.refresh_liked_tracks_quietly(state).await {
+                tracing::warn!("Failed to refresh the liked tracks in the background: {err:#}");
+            }
+            if interval.is_zero() {
+                return;
+            }
+            loop {
+                tokio::time::sleep(interval).await;
+                let playing = state
+                    .player
+                    .read()
+                    .buffered_playback
+                    .as_ref()
+                    .is_some_and(|playback| playback.is_playing);
+                if !playing {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Bring the liked tracks up to date at the background pace, writing only what changed
+    async fn refresh_liked_tracks_quietly(&self, state: &SharedState) -> Result<()> {
+        let Some(_running) = liked_tracks::Running::start() else {
+            return Ok(());
+        };
+        let cached = load_liked_tracks();
+        // nothing cached: the liked tracks page requests them when it's first opened
+        if cached.tracks.is_empty() {
+            return Ok(());
+        }
+        let refresh = check_liked_tracks(&cached, |offset| self.liked_page(offset)).await?;
+        if let LikedRefresh::Done(liked) = &refresh {
+            if liked_unchanged(&cached, liked) {
+                return Ok(());
+            }
+        }
+        let Some(liked) =
+            liked_tracks_up_to_date(refresh, Pace::Background, |offset| self.liked_page(offset))
+                .await?
+        else {
+            tracing::info!(
+                "Stopped refreshing the liked tracks: Spotify limits the rate of requests"
+            );
+            return Ok(());
+        };
+        keep_liked_tracks(state, &liked)
+    }
+
     /// A page of Spotify's liked items from `offset`
     async fn liked_page(&self, offset: usize) -> Result<LikedPage> {
         let page = self.liked_tracks_page(u32::try_from(offset)?).await?;
@@ -2534,6 +2596,13 @@ where
     }
 }
 
+/// Whether a refresh found the same liked items as cached, so nothing needs writing
+fn liked_unchanged(cached: &LikedTracks, liked: &[Option<Track>]) -> bool {
+    cached
+        .slots()
+        .is_some_and(|cached| liked_keys(&cached) == liked_keys(liked))
+}
+
 fn liked_keys(items: &[Option<Track>]) -> Vec<liked_tracks::Key> {
     items
         .iter()
@@ -2622,7 +2691,7 @@ fn move_seed_track_to_front(tracks: &mut Vec<Track>, seed_track: Track) {
 #[cfg(test)]
 mod tests {
     use super::{
-        check_liked_tracks, liked_tracks_up_to_date, move_seed_track_to_front,
+        check_liked_tracks, liked_tracks_up_to_date, liked_unchanged, move_seed_track_to_front,
         parse_current_playback_response, LikedPage, LikedTracks, Pace,
     };
     use crate::state::Track;
@@ -2715,6 +2784,15 @@ mod tests {
 
     fn cached(items: &[Option<Track>]) -> LikedTracks {
         LikedTracks::from_slots(items.to_vec())
+    }
+
+    #[test]
+    fn a_refresh_without_changes_writes_nothing() {
+        let library: Vec<_> = (0..3).map(|i| Some(liked_track(i))).collect();
+        assert!(liked_unchanged(&cached(&library), &library));
+        let mut liked = vec![Some(liked_track(9))];
+        liked.extend(library.iter().cloned());
+        assert!(!liked_unchanged(&cached(&library), &liked));
     }
 
     #[tokio::test]

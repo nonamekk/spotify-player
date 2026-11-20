@@ -153,6 +153,15 @@ async fn start_app(state: &state::SharedState) -> Result<()> {
         }
     });
 
+    // keeps the liked tracks current while nothing plays, for the liked marks
+    tokio::task::spawn({
+        let state = state.clone();
+        let client = client.clone();
+        async move {
+            client.refresh_liked_tracks_while_idle(&state).await;
+        }
+    });
+
     // player event watcher task
     std::thread::Builder::new()
         .name("player-event-watcher".to_string())

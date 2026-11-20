@@ -267,7 +267,7 @@ The app connects to `preferred_device` on startup when no device is active, and 
 
 The app reopens on the pages that were open when it was closed, with the same selections. A context the app played without Spotify knowing it, such as a radio or the liked tracks, stays the playing context across restarts. When Spotify has no playback to resume on startup, the previous one is restored paused at the same position.
 
-On startup the app requests only the playback and the data of the page it reopens on. The library and the liked tracks show what's cached until the library or the liked tracks are opened, and the liked tracks then only request those liked since. Tracks unliked in another app are found in the background with a few requests, a few seconds apart, while the cached list shows.
+On startup the app requests only the playback and the data of the page it reopens on. The library and the liked tracks show what's cached until the library or the liked tracks are opened, and the liked tracks then only request those liked since. Tracks unliked in another app are found in the background with a few requests, a few seconds apart, while the cached list shows. The liked tracks are also refreshed in the background a few seconds after startup and then every 10 minutes while nothing plays (`liked_refresh_delay_secs` and `liked_refresh_interval_mins` in `app.toml`), so tracks liked or unliked in another app show their liked mark; a refresh without changes is a single request.
 
 ### Streaming
 

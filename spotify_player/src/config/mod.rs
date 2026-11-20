@@ -157,6 +157,13 @@ pub struct AppConfig {
 
     /// Move playback to `preferred_device` before running a playback command from this app.
     pub take_over_playback: bool,
+
+    /// Seconds after startup before the liked tracks are first refreshed in the background.
+    pub liked_refresh_delay_secs: u64,
+
+    /// Minutes between background refreshes of the liked tracks while nothing plays.
+    /// 0: only the refresh after startup.
+    pub liked_refresh_interval_mins: u64,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -421,6 +428,8 @@ impl Default for AppConfig {
 
             preferred_device: None,
             take_over_playback: true,
+            liked_refresh_delay_secs: 6,
+            liked_refresh_interval_mins: 10,
         }
     }
 }

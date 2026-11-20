@@ -77,6 +77,8 @@ spotify_player -o device.volume=80 -o theme=dracula
 | `pause_on_startup`                | Start with playback paused instead of resuming the previous session (requires `streaming` feature). | `false`                                                                |
 | `preferred_device`                | Spotify Connect device to connect to when none is active, and to take over playback on.             | Soloist on this machine                                                |
 | `take_over_playback`              | Move playback to `preferred_device` before running a playback command from this app.                | `true`                                                                 |
+| `liked_refresh_delay_secs`        | Seconds after startup before the liked tracks are refreshed in the background.                      | `6`                                                                    |
+| `liked_refresh_interval_mins`     | Minutes between liked tracks refreshes while nothing plays; `0`: only the one after startup.        | `10`                                                                   |
 | `enable_relative_line_number`     | Enable Vim-style relative line numbers for lists and popups.                                        | `false`                                                                |
 | `device`                          | Device configuration (see below).                                                                   | See below                                                              |
 

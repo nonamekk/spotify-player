@@ -29,6 +29,8 @@ cover_img_pixels = 16
 seek_duration_secs = 5
 custom_queue = true
 take_over_playback = true
+liked_refresh_delay_secs = 6
+liked_refresh_interval_mins = 10
 enable_relative_line_number = false
 
 [device]
