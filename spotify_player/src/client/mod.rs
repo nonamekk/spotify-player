@@ -1576,6 +1576,7 @@ impl AppClient {
                 let uri = id.uri();
                 self.library_remove([LibraryId::Track(id)]).await?;
                 state.data.write().user_data.saved_tracks.remove(&uri);
+                forget_cached_liked_track(&uri);
             }
             ItemId::Album(id) => {
                 state
@@ -2231,6 +2232,37 @@ struct LikedTracks {
     tracks: Vec<Track>,
 }
 
+impl LikedTracks {
+    /// Remove an unliked track, `false` if it wasn't cached
+    fn remove(&mut self, uri: &str) -> bool {
+        let count = self.tracks.len();
+        self.tracks.retain(|track| track.id.uri() != uri);
+        if self.tracks.len() == count {
+            return false;
+        }
+        self.total = self.total.saturating_sub(1);
+        true
+    }
+}
+
+/// Remove a track unliked here from the cached liked tracks: the next check compares Spotify's
+/// count with the cached one, and a mismatch makes it request every liked track again
+fn forget_cached_liked_track(uri: &str) {
+    let cache_folder = &config::get_config().cache_folder;
+    let Some(mut liked) =
+        load_data_from_file_cache::<LikedTracks>(FileCacheKey::LikedTracks, cache_folder)
+    else {
+        return;
+    };
+    if liked.remove(uri) {
+        if let Err(err) =
+            store_data_into_file_cache(FileCacheKey::LikedTracks, cache_folder, &liked)
+        {
+            tracing::warn!("Failed to update the cached liked tracks: {err:#}");
+        }
+    }
+}
+
 fn move_seed_track_to_front(tracks: &mut Vec<Track>, seed_track: Track) {
     tracks.retain(|track| track.id != seed_track.id);
     tracks.insert(0, seed_track);
@@ -2238,9 +2270,9 @@ fn move_seed_track_to_front(tracks: &mut Vec<Track>, seed_track: Track) {
 
 #[cfg(test)]
 mod tests {
-    use super::{move_seed_track_to_front, parse_current_playback_response};
+    use super::{move_seed_track_to_front, parse_current_playback_response, LikedTracks};
     use crate::state::Track;
-    use rspotify::model::{PlayableItem, TrackId};
+    use rspotify::model::{Id, PlayableItem, TrackId};
 
     fn sample_track(id: &'static str, name: &str) -> Track {
         Track {
@@ -2252,6 +2284,25 @@ mod tests {
             explicit: false,
             added_at: 0,
         }
+    }
+
+    #[test]
+    fn removing_an_unliked_track_lowers_the_count() {
+        let unliked = sample_track("3n3Ppam7vgaVa1iaRUc9Lp", "unliked");
+        let kept = sample_track("4uLU6hMCjMI75M1A2tKUQC", "kept");
+        let mut liked = LikedTracks {
+            total: 2,
+            tracks: vec![unliked.clone(), kept.clone()],
+        };
+
+        assert!(liked.remove(&unliked.id.uri()));
+        assert_eq!(liked.total, 1);
+        assert_eq!(liked.tracks.len(), 1);
+        assert_eq!(liked.tracks[0].id, kept.id);
+
+        // a track that isn't cached leaves the count alone
+        assert!(!liked.remove(&unliked.id.uri()));
+        assert_eq!(liked.total, 1);
     }
 
     #[test]
