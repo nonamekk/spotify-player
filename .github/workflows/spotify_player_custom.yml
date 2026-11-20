@@ -4,7 +4,7 @@ name: Build spotify-player-custom
 # branch was rebased by hand onto a release (see custom/README.md). The plan job then applies this
 # branch's own commits to the release, the build job builds the Arch package, and the release job
 # publishes it: as a release of its own, and in the pacman repository kept as the assets of the
-# `pacman-repo` release.
+# `pacman-repo` release. New releases are announced by upstream_release.yml instead.
 
 on:
   workflow_dispatch:

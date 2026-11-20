@@ -5,8 +5,8 @@ Builds of [spotify-player](https://github.com/aome510/spotify-player) for Arch L
 | Path | What it is |
 |---|---|
 | `soloist_history/`, `custom/soloist-history.service` | The played history: its record format, shared with the app, and the `soloist-history` listener with its user service (see [Played history](#played-history)), installed by the package |
-| `custom/ci/` | The checks (`check.sh`) and the build: `plan.sh`, `rebase.sh`, `build.sh` with `container-build.sh` and `PKGBUILD`, `publish.sh` |
-| `.github/workflows/` | `spotify_player_custom.yml` builds when started by hand. It runs `custom/ci/` scripts; GitHub only runs workflows from that folder |
+| `custom/ci/` | The release announcement (`announce.sh`), the checks (`check.sh`) and the build: `plan.sh`, `rebase.sh`, `build.sh` with `container-build.sh` and `PKGBUILD`, `publish.sh` |
+| `.github/workflows/` | `upstream_release.yml` announces new releases; `spotify_player_custom.yml` builds when started by hand. Both run `custom/ci/` scripts; GitHub only runs workflows from that folder |
 
 ## The changes
 
@@ -26,7 +26,7 @@ Builds of [spotify-player](https://github.com/aome510/spotify-player) for Arch L
 
 ## After a spotify-player release
 
-Nothing happens on its own. Rebase by hand, check and push:
+Nothing happens on its own. Once a day `upstream_release.yml` (`custom/ci/announce.sh`) compares spotify-player's latest release with the release this branch sits on, and opens an issue for a new one: its release notes and the files both the release and this branch change. Rebase by hand, check and push:
 
 ```sh
 git fetch upstream tag <new tag>
@@ -80,4 +80,7 @@ Then `sudo pacman -Syu spotify-player` (it replaces `spotify-player-feats-git`).
 
 ## Setup on GitHub
 
+- `spotify-player-custom` is the repository's default branch: the daily release check is a scheduled workflow, and those only start from it.
+- Issues are on (a fork starts with them off): new releases are announced as issues. With them off the daily check fails instead, and GitHub mails the failed run.
 - Actions are enabled for the repository (a fork starts with them off). Upstream's workflows are removed from this branch, so only this build runs, and so are its Nix files (`flake.nix`, `flake.lock`, `default.nix`), which nothing here uses. `rebase.sh` leaves commits that only remove those out of the build, so upstream changing them never stops it; keep them in a commit of their own.
+- GitHub turns scheduled workflows off after 60 days without activity in a public repository; a manual run of "Announce spotify-player releases" turns it back on.

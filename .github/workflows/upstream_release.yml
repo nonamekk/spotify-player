@@ -1,0 +1,30 @@
+name: Announce spotify-player releases
+
+# Once a day, compares spotify-player's latest release with the release this branch sits on. A new
+# one gets an issue in this repository (GitHub notifies its owner), with its notes and the files it
+# shares with this branch's changes, for rebasing by hand. Nothing is rebased or built.
+# Scheduled runs start only from the default branch, so spotify-player-custom has to be the
+# repository's default; GitHub turns them off after 60 days without activity in the repository.
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  announce:
+    if: github.repository != 'aome510/spotify-player'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Announce a new release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash custom/ci/announce.sh
