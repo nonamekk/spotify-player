@@ -1,0 +1,57 @@
+# Arch's spotify-player package (extra/spotify-player) built from this fork's source.
+# The workflow sets pkgver and puts the source next to this file as spotify-player.tar.gz.
+
+# The CPU the app is built for: the Ryzen 9600X this package is made for. The package then runs on
+# Zen 5 only, and the runner's CPU can't run it either, so nothing built for this CPU runs during the
+# build: the flag goes in through `--target`, which keeps it off build scripts and proc macros, and
+# check() builds its tests without it.
+_cpu=znver5
+_triple=x86_64-unknown-linux-gnu
+
+pkgname=spotify-player
+pkgver=0.0.0
+pkgrel=1.1
+pkgdesc="A command driven spotify player (spotify-player-custom: session restore, preferred device, played history; Zen 5)"
+arch=('x86_64')
+url="https://github.com/nonamekk/spotify-player"
+license=('MIT')
+depends=('openssl' 'dbus' 'libsixel')
+optdepends=('libnotify: Notification support' 'fzf: Fuzzy search support')
+makedepends=('cargo')
+provides=('spotify-player')
+conflicts=('spotify-player-git' 'spotify-player-feats-git')
+source=("spotify-player.tar.gz")
+sha512sums=('SKIP')
+options=('!lto' '!debug')
+
+prepare() {
+  cd spotify-player
+  cargo fetch --locked --target "$(rustc --print host-tuple)"
+}
+
+build() {
+  # Arch's features without streaming (the playback is on a Soloist device), plus pixelate for
+  # `cover_img_pixels`
+  local _features=('media-control' 'notify' 'image' 'pixelate' 'sixel' 'fzf')
+  cd spotify-player
+  local _rustflags="$RUSTFLAGS -C target-cpu=$_cpu"
+  RUSTFLAGS="$_rustflags" cargo build --frozen --release --target "$_triple" -p spotify_player \
+    --bin spotify_player --no-default-features --features "${_features[*]}"
+  # the played history listener of a Soloist device (soloist-history.service)
+  RUSTFLAGS="$_rustflags" cargo build --frozen --release --target "$_triple" -p soloist_history
+}
+
+check() {
+  cd spotify-player
+  cargo test --frozen -p spotify_player --no-default-features --features media-control,image,notify,fzf
+  cargo test --frozen -p soloist_history
+}
+
+package() {
+  cd spotify-player
+  install -Dm755 "target/$_triple/release/spotify_player" -t "${pkgdir}/usr/bin"
+  install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm755 "target/$_triple/release/soloist-history" -t "${pkgdir}/usr/lib/spotify-player"
+  install -Dm644 custom/soloist-history.service -t "${pkgdir}/usr/lib/systemd/user"
+}

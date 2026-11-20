@@ -1,0 +1,110 @@
+name: Build spotify-player-custom
+
+# Disabled as automation: it runs only when started by hand (Actions → Run workflow), after the
+# branch was rebased by hand onto a release (see custom/README.md). The plan job then applies this
+# branch's own commits to the release, the build job builds the Arch package, and the release job
+# publishes it: as a release of its own, and in the pacman repository kept as the assets of the
+# `pacman-repo` release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "spotify-player release tag to build (empty: the latest release)"
+        required: false
+        default: ""
+      force:
+        description: "Build even when a release for this tag and this branch head exists"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: spotify-player-custom
+  cancel-in-progress: false
+
+# Each job runs custom/ci/ of the commit that started it; the steps are in those scripts.
+jobs:
+  # Upstream's CI checks; a failure stops the build.
+  checks:
+    if: github.repository != 'aome510/spotify-player'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev libasound2-dev libdbus-1-dev libxcb-shape0-dev libxcb-xfixes0-dev
+          rustup toolchain install stable --profile minimal --component clippy,rustfmt
+          rustup default stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Check
+        run: bash custom/ci/check.sh
+
+  plan:
+    if: github.repository != 'aome510/spotify-player'
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.plan.outputs.build }}
+      tag: ${{ steps.plan.outputs.tag }}
+      release: ${{ steps.plan.outputs.release }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: custom/ci
+          persist-credentials: false
+      - name: Decide what to build
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.tag }}
+          FORCE: ${{ inputs.force }}
+        run: bash custom/ci/plan.sh
+
+  build:
+    needs: [plan, checks]
+    if: needs.plan.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: custom/ci
+          persist-credentials: false
+          path: fork
+      - name: Build the package of this branch's commits on the release
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: bash fork/custom/ci/build.sh
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: package
+          path: out/
+          retention-days: 7
+
+  release:
+    needs: [plan, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: custom/ci
+          persist-credentials: false
+          path: fork
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: package
+          path: dist
+      - name: Publish the release and the pacman repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          RELEASE: ${{ needs.plan.outputs.release }}
+        run: bash fork/custom/ci/publish.sh
