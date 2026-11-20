@@ -1,10 +1,11 @@
 use crossterm::event::KeyCode;
 use ratatui::widgets::Widget;
+use serde::{Deserialize, Serialize};
 
 use super::{Line, Modifier, Paragraph, Span, Style};
 use crate::key::Key;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LineInput {
     // This is less space-efficient than String, but it's easier to work with text manipulation at the
     // cursor. Otherwise, you have to shuffle back and forth between String and String::chars().

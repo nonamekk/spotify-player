@@ -3,6 +3,7 @@ mod data;
 mod model;
 mod player;
 mod queue;
+pub mod session;
 mod ui;
 
 use std::{collections::VecDeque, sync::Arc};
@@ -50,6 +51,7 @@ impl State {
         }
 
         let app_data = AppData::new(&configs.cache_folder);
+        session::restore(&mut ui, &configs.cache_folder);
 
         Self {
             ui: Mutex::new(ui),

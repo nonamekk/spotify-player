@@ -125,6 +125,9 @@ async fn start_app(state: &state::SharedState) -> Result<()> {
         state::USER_LIKED_TRACKS_ID.to_owned(),
     )))?;
     client_pub.send(client::ClientRequest::GetUserSavedShows)?;
+    for request in client::restored_page_requests(state) {
+        client_pub.send(request)?;
+    }
 
     // client socket task (for handling CLI commands)
     tokio::task::spawn({
@@ -186,6 +189,14 @@ async fn start_app(state: &state::SharedState) -> Result<()> {
             let state = state.clone();
             move || ui::run(&state, terminal)
         })?;
+
+        // session saver task
+        std::thread::Builder::new()
+            .name("session-saver".to_string())
+            .spawn({
+                let state = state.clone();
+                move || state::session::start_session_saver(&state)
+            })?;
     }
 
     #[cfg(feature = "media-control")]

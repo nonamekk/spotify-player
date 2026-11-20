@@ -20,6 +20,7 @@ pub enum FileCacheKey {
     SavedShows,
     SavedAlbums,
     SavedTracks,
+    Session,
 }
 
 /// default time-to-live cache duration

@@ -261,6 +261,10 @@ After changing the client ID, re-run `spotify_player authenticate` to refresh th
 
 Control Spotify remotely with [Spotify Connect](https://support.spotify.com/us/article/spotify-connect/). Press **D** to list devices, then **enter** to connect.
 
+### Session
+
+The app reopens on the pages that were open when it was closed, with the same selections.
+
 ### Streaming
 
 Stream music directly from the terminal. The streaming feature is enabled by default and uses the `rodio-backend` audio backend unless otherwise specified.

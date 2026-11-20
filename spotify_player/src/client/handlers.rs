@@ -6,7 +6,10 @@ use tracing::Instrument;
 
 use crate::{
     config,
-    state::{ContextId, ContextPageType, ContextPageUIState, PageState, PlayableId, SharedState},
+    state::{
+        BrowsePageUIState, ContextId, ContextPageType, ContextPageUIState, PageState, PlayableId,
+        SharedState, TrackId,
+    },
 };
 
 use crate::utils::map_join;
@@ -166,8 +169,7 @@ fn handle_page_change_event(
             // To avoid making too many requests, only request if context id is changed
             // or it's been a while since the last request.
             if let Some(id) = id {
-                if !matches!(id, ContextId::Tracks(_))
-                    && !state.data.read().caches.context.contains_key(&id.uri())
+                if !state.data.read().caches.context.contains_key(&id.uri())
                     && (new_id
                         || handler_state.last_get_context.elapsed() > CONTEXT_REFRESH_THROTTLE)
                 {
@@ -202,6 +204,40 @@ fn handle_page_change_event(
     }
 
     Ok(())
+}
+
+/// Requests for the data of the page restored from the previous session, which is otherwise
+/// requested when the page is opened. Pages further back in the history request theirs when shown
+/// again (contexts through `handle_page_change_event`) or show what's cached.
+pub fn restored_page_requests(state: &SharedState) -> Vec<ClientRequest> {
+    state
+        .ui
+        .lock()
+        .history
+        .last()
+        .map(page_data_requests)
+        .unwrap_or_default()
+}
+
+fn page_data_requests(page: &PageState) -> Vec<ClientRequest> {
+    match page {
+        PageState::Search { current_query, .. } if !current_query.is_empty() => {
+            vec![ClientRequest::Search(current_query.clone())]
+        }
+        PageState::Lyrics { track_uri, .. } => TrackId::from_uri(track_uri)
+            .map(|id| ClientRequest::GetLyrics {
+                track_id: id.into_static(),
+            })
+            .into_iter()
+            .collect(),
+        PageState::Browse {
+            state: BrowsePageUIState::CategoryList { .. },
+        } => vec![ClientRequest::GetBrowseCategories],
+        PageState::Browse {
+            state: BrowsePageUIState::CategoryPlaylistList { category, .. },
+        } => vec![ClientRequest::GetBrowseCategoryPlaylists(category.clone())],
+        _ => vec![],
+    }
 }
 
 fn handle_player_event(

@@ -45,6 +45,7 @@ pub fn run(state: &SharedState, mut terminal: Terminal) -> Result<()> {
         {
             let mut ui = state.ui.lock();
             if !ui.is_running {
+                crate::state::session::store(&ui);
                 clean_up(terminal).context("clean up UI resources")?;
                 std::process::exit(0);
             }
