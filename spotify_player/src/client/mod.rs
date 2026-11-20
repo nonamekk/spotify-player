@@ -101,6 +101,8 @@ pub struct AppClient {
     stream_conn: Arc<Mutex<Option<librespot_connect::Spirc>>>,
     /// The device last chosen from this app, which `take_over_playback` leaves the playback on
     chosen_device_id: Arc<Mutex<Option<String>>>,
+    /// Held while a player request is sent, so requests reach Spotify in the order they were made
+    player_request_order: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Deref for AppClient {
@@ -204,6 +206,7 @@ impl AppClient {
             #[cfg(feature = "streaming")]
             stream_conn: Arc::new(Mutex::new(None)),
             chosen_device_id: Arc::new(Mutex::new(None)),
+            player_request_order: Arc::default(),
         })
     }
 
@@ -632,9 +635,17 @@ impl AppClient {
                 state.data.write().user_data.user = Some(user);
             }
             ClientRequest::Player(request) => {
-                let playback = state.player.read().buffered_playback.clone();
-                let playback = self.handle_player_request(request, playback).await?;
-                state.player.write().buffered_playback = playback;
+                let result = {
+                    // the next request starts from the playback this one leaves
+                    let _in_order = self.player_request_order.lock().await;
+                    let playback = state.player.read().buffered_playback.clone();
+                    let result = self.handle_player_request(request, playback).await;
+                    if let Ok(playback) = &result {
+                        state.player.write().buffered_playback.clone_from(playback);
+                    }
+                    result
+                };
+                result?;
                 self.update_playback_non_blocking(state);
             }
             ClientRequest::GetCurrentPlayback => {
