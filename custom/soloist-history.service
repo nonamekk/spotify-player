@@ -1,0 +1,15 @@
+[Unit]
+Description=Played history of the Spotify Soloist device for spotify_player
+Documentation=https://github.com/nonamekk/spotify-player/tree/spotify-player-custom/custom
+# Soloist's events come from its WebSocket API (soloist -w 127.0.0.1:0)
+After=soloist.service
+
+[Service]
+# Stopping it writes the track playing at that moment
+ExecStart=/usr/lib/spotify-player/soloist-history
+# The connection ends whenever Soloist restarts; connect to the new one
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
