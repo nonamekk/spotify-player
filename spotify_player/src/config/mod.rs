@@ -164,6 +164,12 @@ pub struct AppConfig {
     /// Minutes between background refreshes of the liked tracks while nothing plays.
     /// 0: only the refresh after startup.
     pub liked_refresh_interval_mins: u64,
+
+    /// Number of entries kept in the played history (`PlayedHistory.msgpack` in the cache folder).
+    pub played_history_size: usize,
+
+    /// Played history entries played for less than this are left out of the recently played tracks.
+    pub played_history_min_played_secs: u64,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -430,6 +436,8 @@ impl Default for AppConfig {
             take_over_playback: true,
             liked_refresh_delay_secs: 6,
             liked_refresh_interval_mins: 10,
+            played_history_size: 1500,
+            played_history_min_played_secs: 10,
         }
     }
 }

@@ -31,6 +31,8 @@ custom_queue = true
 take_over_playback = true
 liked_refresh_delay_secs = 6
 liked_refresh_interval_mins = 10
+played_history_size = 1500
+played_history_min_played_secs = 10
 enable_relative_line_number = false
 
 [device]

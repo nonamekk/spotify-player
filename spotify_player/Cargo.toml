@@ -68,6 +68,7 @@ futures = "0.3.34"
 # fix for https://github.com/aome510/spotify-player/issues/914
 vergen = "=9.0.6"
 ratatui-image = { version = "11.0.8", optional = true, default-features = false, features = ["crossterm"] }
+soloist_history = { path = "../soloist_history" }
 
 [dev-dependencies]
 wiremock = "0.6.5"

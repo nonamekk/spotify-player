@@ -7,12 +7,12 @@ use crate::{auth, config};
 use crate::{
     auth::AuthConfig,
     state::{
-        load_data_from_file_cache, radios, store_data_into_file_cache, Album, AlbumId, Artist,
-        ArtistId, Category, Context, ContextId, Device, FileCacheKey, Item, ItemId, MemoryCaches,
-        PageState, Playback, PlaybackMetadata, Playlist, PlaylistFolderItem, PlaylistId,
-        SearchResults, SharedState, Show, ShowId, Track, TrackId, UserId, TTL_CACHE_DURATION,
-        USER_LIKED_TRACKS_ID, USER_LIKED_TRACKS_URI, USER_RECENTLY_PLAYED_TRACKS_URI,
-        USER_TOP_TRACKS_URI,
+        load_data_from_file_cache, played_history, radios, store_data_into_file_cache, Album,
+        AlbumId, Artist, ArtistId, Category, Context, ContextId, Device, FileCacheKey, Item,
+        ItemId, MemoryCaches, PageState, Playback, PlaybackMetadata, Playlist, PlaylistFolderItem,
+        PlaylistId, SearchResults, SharedState, Show, ShowId, Track, TrackId, UserId,
+        TTL_CACHE_DURATION, USER_LIKED_TRACKS_ID, USER_LIKED_TRACKS_URI,
+        USER_RECENTLY_PLAYED_TRACKS_URI, USER_TOP_TRACKS_URI,
     },
 };
 
@@ -681,11 +681,13 @@ impl AppClient {
             }
             ClientRequest::GetContext(context) => {
                 let uri = context.uri();
-                // Liked tracks must always be refreshed to keep user_data.saved_tracks in sync.
-                let cache_miss = uri != USER_LIKED_TRACKS_URI
-                    && !state.data.read().caches.context.contains_key(&uri);
-                let is_liked = uri == USER_LIKED_TRACKS_URI;
-                if cache_miss || is_liked {
+                // Liked tracks must always be refreshed to keep user_data.saved_tracks in sync,
+                // and the recently played tracks to show the latest of the played history.
+                let always_refresh =
+                    uri == USER_LIKED_TRACKS_URI || uri == USER_RECENTLY_PLAYED_TRACKS_URI;
+                let cache_miss =
+                    !always_refresh && !state.data.read().caches.context.contains_key(&uri);
+                if cache_miss || always_refresh {
                     let ctx = match context {
                         ContextId::Playlist(playlist_id) => {
                             self.playlist_context(playlist_id).await?
@@ -1165,6 +1167,12 @@ impl AppClient {
 
     /// Get the recently played tracks of the current user
     pub async fn current_user_recently_played_tracks(&self) -> Result<Vec<Track>> {
+        if let Some(tracks) =
+            played_history::recently_played_tracks(&config::get_config().cache_folder)?
+        {
+            return Ok(tracks);
+        }
+
         let play_histories = self
             .current_user_recently_played(Some(50), None)
             .await?

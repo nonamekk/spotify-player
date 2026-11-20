@@ -79,6 +79,8 @@ spotify_player -o device.volume=80 -o theme=dracula
 | `take_over_playback`              | Move playback to `preferred_device` before running a playback command from this app.                | `true`                                                                 |
 | `liked_refresh_delay_secs`        | Seconds after startup before the liked tracks are refreshed in the background.                      | `6`                                                                    |
 | `liked_refresh_interval_mins`     | Minutes between liked tracks refreshes while nothing plays; `0`: only the one after startup.        | `10`                                                                   |
+| `played_history_size`             | Number of tracks kept in the played history, `PlayedHistory.msgpack` in the cache folder.           | `1500`                                                                 |
+| `played_history_min_played_secs`  | Played history entries played for less seconds are hidden from the recently played tracks.          | `10`                                                                   |
 | `enable_relative_line_number`     | Enable Vim-style relative line numbers for lists and popups.                                        | `false`                                                                |
 | `device`                          | Device configuration (see below).                                                                   | See below                                                              |
 

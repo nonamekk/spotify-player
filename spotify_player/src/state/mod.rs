@@ -1,6 +1,7 @@
 mod constant;
 mod data;
 mod model;
+pub mod played_history;
 mod player;
 mod queue;
 pub mod radios;
