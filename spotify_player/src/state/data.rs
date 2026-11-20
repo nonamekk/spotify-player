@@ -22,6 +22,7 @@ pub enum FileCacheKey {
     SavedTracks,
     Session,
     PlayingTracks,
+    Radios,
 }
 
 /// default time-to-live cache duration

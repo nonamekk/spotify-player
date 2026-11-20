@@ -3,6 +3,7 @@ mod data;
 mod model;
 mod player;
 mod queue;
+pub mod radios;
 pub mod session;
 mod ui;
 

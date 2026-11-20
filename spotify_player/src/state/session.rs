@@ -72,6 +72,12 @@ fn store_playing_tracks(state: &SharedState, id: Option<&TracksId>) {
     {
         tracing::error!("Failed to store the playing tracks: {err:#}");
     }
+    // the radio's page then shows the list played from, even once the playing list is forgotten
+    if let Some(radio) = playing.filter(|p| p.id.uri.starts_with("radio:")) {
+        if let Err(err) = super::radios::store(cache_folder, &radio.id.uri, &radio.tracks) {
+            tracing::error!("Failed to store the playing radio: {err:#}");
+        }
+    }
 }
 
 /// Store the session whenever it changes, so it survives the application being killed

@@ -7,11 +7,11 @@ use crate::{auth, config};
 use crate::{
     auth::AuthConfig,
     state::{
-        store_data_into_file_cache, Album, AlbumId, Artist, ArtistId, Category, Context, ContextId,
-        Device, FileCacheKey, Item, ItemId, MemoryCaches, Playback, PlaybackMetadata, Playlist,
-        PlaylistFolderItem, PlaylistId, SearchResults, SharedState, Show, ShowId, Track, TrackId,
-        UserId, TTL_CACHE_DURATION, USER_LIKED_TRACKS_URI, USER_RECENTLY_PLAYED_TRACKS_URI,
-        USER_TOP_TRACKS_URI,
+        radios, store_data_into_file_cache, Album, AlbumId, Artist, ArtistId, Category, Context,
+        ContextId, Device, FileCacheKey, Item, ItemId, MemoryCaches, Playback, PlaybackMetadata,
+        Playlist, PlaylistFolderItem, PlaylistId, SearchResults, SharedState, Show, ShowId, Track,
+        TrackId, UserId, TTL_CACHE_DURATION, USER_LIKED_TRACKS_URI,
+        USER_RECENTLY_PLAYED_TRACKS_URI, USER_TOP_TRACKS_URI,
     },
 };
 
@@ -623,7 +623,7 @@ impl AppClient {
                                 }
                             }
                             u if u.starts_with("radio:") => Context::Tracks {
-                                tracks: self.radio_tracks(u["radio:".len()..].to_string()).await?,
+                                tracks: self.radio(u).await?,
                                 desc: tracks_id.kind.clone(),
                             },
                             uri => anyhow::bail!("unsupported Tracks context: {uri}"),
@@ -1058,6 +1058,18 @@ impl AppClient {
     }
 
     /// Get recommendation (radio) tracks based on a seed
+    /// The tracks of the radio `uri` (`radio:<seed URI>`): the list kept from when it was first
+    /// fetched, so that it still holds the tracks played from it
+    async fn radio(&self, uri: &str) -> Result<Vec<Track>> {
+        let cache_folder = &config::get_config().cache_folder;
+        if let Some(tracks) = radios::load(cache_folder, uri) {
+            return Ok(tracks);
+        }
+        let tracks = self.radio_tracks(uri["radio:".len()..].to_string()).await?;
+        radios::store(cache_folder, uri, &tracks)?;
+        Ok(tracks)
+    }
+
     pub async fn radio_tracks(&self, seed_uri: String) -> Result<Vec<Track>> {
         #[derive(Debug, Deserialize)]
         struct TrackData {
