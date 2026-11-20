@@ -173,6 +173,15 @@ async fn start_app(state: &state::SharedState) -> Result<()> {
             }
         })?;
 
+    // events of a Soloist on this machine, which show its playback changes as they happen
+    std::thread::Builder::new()
+        .name("soloist-events".to_string())
+        .spawn({
+            let state = state.clone();
+            let client_pub = client_pub.clone();
+            move || client::soloist::watch_events(&state, &client_pub)
+        })?;
+
     if !state.is_daemon {
         #[cfg(feature = "image")]
         ui::init_image_picker(state).context("initialize image picker")?;

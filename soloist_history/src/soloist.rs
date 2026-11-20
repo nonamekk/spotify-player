@@ -9,6 +9,11 @@ use anyhow::{anyhow, Context as _, Result};
 use serde_json::Value;
 use tungstenite::WebSocket;
 
+pub use tungstenite::Message;
+
+/// A connection to Soloist's WebSocket API
+pub type Socket = WebSocket<TcpStream>;
+
 use crate::Record;
 
 /// How long a read waits for an event, so a reader can check for other work

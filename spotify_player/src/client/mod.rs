@@ -31,7 +31,7 @@ mod handlers;
 mod liked_tracks;
 mod middleware;
 mod request;
-mod soloist;
+pub mod soloist;
 mod spotify;
 
 pub use handlers::*;
@@ -668,6 +668,10 @@ impl AppClient {
             ClientRequest::GetCurrentPlayback => {
                 self.retrieve_current_playback(state, true).await?;
             }
+            ClientRequest::NewPlaybackShown => {
+                state.forget_stale_playing_tracks();
+                self.handle_new_playback_event(state).await?;
+            }
             ClientRequest::GetDevices => {
                 #[allow(unused_mut)]
                 let mut devices: Vec<Device> = self
@@ -923,6 +927,12 @@ impl AppClient {
         let client = self.clone();
         let state = state.clone();
         tokio::task::spawn(async move {
+            // Soloist's events show its changes as they happen: one check after them is enough
+            if soloist::is_following() {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                let _ = client.retrieve_current_playback(&state, false).await;
+                return;
+            }
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             let _ = client.retrieve_current_playback(&state, false).await;
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -2018,12 +2028,24 @@ impl AppClient {
     ) -> Result<()> {
         let new_playback = {
             // update the playback state
-            let playback = self.current_playback2().await?;
+            let mut playback = self.current_playback2().await?;
             let mut player = state.player.write();
             // a track shown on request stays until Spotify has it too
             if player.is_before_request(playback.as_ref().and_then(|p| p.item.as_ref())) {
                 tracing::debug!("Spotify still reports a track before the requested one");
                 return Ok(());
+            }
+            // Soloist's events tell its track first-hand, while Spotify's view of it can be a few
+            // seconds and tracks behind: the rest of the playback comes from Spotify
+            if let Some(playback) = playback.as_mut().filter(|p| {
+                soloist::is_following()
+                    && soloist::local_device_name().is_some_and(|name| p.device.name == name)
+            }) {
+                if let Some(shown) = player.current_playback() {
+                    playback.item = shown.item;
+                    playback.progress = shown.progress;
+                    playback.is_playing = shown.is_playing;
+                }
             }
             let prev_item = player.currently_playing();
 
@@ -2468,9 +2490,12 @@ type ShownBefore = (
 /// Show the track a player request plays right away, before Spotify reports it. Returns what was
 /// shown before, to put back if the request fails, or `None` when it shows nothing new.
 fn show_requested_track(state: &SharedState, request: &PlayerRequest) -> Option<ShownBefore> {
+    // Next and Previous are guesses from the queue and the list, which a quick series of them
+    // outruns; a followed Soloist reports the right track about 100 ms later instead
+    let guesses = !soloist::is_following();
     let (previous, started) = match request {
-        PlayerRequest::NextTrack => (None, None),
-        PlayerRequest::PreviousTrack => (state.previous_track(), None),
+        PlayerRequest::NextTrack if guesses => (None, None),
+        PlayerRequest::PreviousTrack if guesses => (state.previous_track(), None),
         PlayerRequest::StartPlayback(playback, _) => (None, Some(state.started_track(playback)?)),
         _ => return None,
     };

@@ -118,6 +118,47 @@ impl PlayerState {
         self.show_skipped_to(previous)
     }
 
+    /// Show the playback a device reports as it changes (Soloist's events): `item`, playing or
+    /// not, at `position_ms`. Returns whether `item` is another track than the one shown, or `None`
+    /// when no playback is known yet.
+    pub fn show_device_playback(
+        &mut self,
+        item: rspotify::model::PlayableItem,
+        playing: bool,
+        position_ms: Option<i64>,
+    ) -> Option<bool> {
+        fn has_cover(item: Option<&rspotify::model::PlayableItem>) -> bool {
+            matches!(item, Some(rspotify::model::PlayableItem::Track(track)) if !track.album.images.is_empty())
+        }
+        self.playback.as_ref()?;
+        if self.is_before_request(Some(&item)) {
+            return Some(false);
+        }
+        // a track shown from a list may lack its cover, which the device's report has
+        let changed = item_uri(self.currently_playing()) != item_uri(Some(&item))
+            || (!has_cover(self.currently_playing()) && has_cover(Some(&item)));
+        if changed {
+            let queue = self.queue.as_mut().map(|queue| &mut queue.queue);
+            if let Some(queue) =
+                queue.filter(|queue| item_uri(queue.first()) == item_uri(Some(&item)))
+            {
+                queue.remove(0);
+            }
+            self.show_skipped_to(item);
+        }
+
+        let playback = self.playback.as_mut()?;
+        playback.is_playing = playing;
+        if let Some(position_ms) = position_ms {
+            playback.progress = Some(chrono::Duration::milliseconds(position_ms));
+            self.playback_last_updated_time = Some(std::time::Instant::now());
+        }
+        if let Some(buffered) = self.buffered_playback.as_mut() {
+            buffered.is_playing = playing;
+        }
+        Some(changed)
+    }
+
     /// Mark the shown track as shown on request, in place of the track `before`, so reports of
     /// that track, or of those earlier requests in a quick series replaced, don't bring them back
     /// while the device hasn't followed yet
@@ -261,6 +302,98 @@ mod tests {
     }
 
     #[test]
+    fn a_device_moving_on_shows_the_track_and_drops_it_from_the_queue() {
+        let mut player = player();
+        assert_eq!(
+            player.show_device_playback(track("B"), true, Some(0)),
+            Some(true)
+        );
+        assert_eq!(shown_name(&player), "B");
+        let queue = &player.queue.as_ref().unwrap().queue;
+        assert_eq!(queue.len(), 1);
+        assert!(player.playback_progress().unwrap().num_seconds() < 1);
+    }
+
+    #[test]
+    fn a_device_pausing_keeps_the_track() {
+        let mut player = player();
+        assert_eq!(
+            player.show_device_playback(track("A"), false, Some(95_000)),
+            Some(false)
+        );
+        assert_eq!(shown_name(&player), "A");
+        assert!(!player.playback.as_ref().unwrap().is_playing);
+        assert_eq!(player.playback_progress().unwrap().num_seconds(), 95);
+        assert_eq!(player.queue.as_ref().unwrap().queue.len(), 2);
+    }
+
+    #[test]
+    fn a_device_report_fills_in_the_cover_of_a_track_shown_without_one() {
+        let mut player = player();
+        let with_cover = |item: PlayableItem| match item {
+            PlayableItem::Track(mut track) => {
+                track.album.images = vec![rspotify::model::Image {
+                    url: "https://i.scdn.co/image/cover".to_owned(),
+                    height: Some(640),
+                    width: Some(640),
+                }];
+                PlayableItem::Track(track)
+            }
+            item => item,
+        };
+        assert_eq!(
+            player.show_device_playback(with_cover(track("A")), true, Some(91_000)),
+            Some(true)
+        );
+        assert_eq!(
+            player.show_device_playback(with_cover(track("A")), true, Some(92_000)),
+            Some(false)
+        );
+        assert_eq!(shown_name(&player), "A");
+        assert_eq!(player.queue.as_ref().unwrap().queue.len(), 2);
+    }
+
+    #[test]
+    fn a_quick_series_of_requests_holds_every_track_it_passed() {
+        let mut player = player();
+        let a = player.currently_playing().cloned();
+        assert!(player.skip_to_queued()); // B
+        player.mark_requested(a.as_ref());
+        let b = player.currently_playing().cloned();
+        assert!(player.skip_to_queued()); // C
+        player.mark_requested(b.as_ref());
+        // the device reports A, then B, on its way to C
+        assert_eq!(
+            player.show_device_playback(track("A"), true, Some(0)),
+            Some(false)
+        );
+        assert_eq!(
+            player.show_device_playback(track("B"), true, Some(0)),
+            Some(false)
+        );
+        assert_eq!(shown_name(&player), "C");
+        assert_eq!(
+            player.show_device_playback(track("C"), true, Some(0)),
+            Some(false)
+        );
+        assert!(player.requested.is_none());
+    }
+
+    #[test]
+    fn a_device_going_elsewhere_than_requested_wins_at_once() {
+        let mut player = player();
+        let before = player.currently_playing().cloned();
+        assert!(player.skip_to_queued());
+        player.mark_requested(before.as_ref());
+        assert_eq!(
+            player.show_device_playback(track("C"), true, Some(0)),
+            Some(true)
+        );
+        assert_eq!(shown_name(&player), "C");
+        assert!(player.requested.is_none());
+    }
+
+    #[test]
     fn a_queue_still_listing_the_playing_track_starts_after_it() {
         let mut player = player();
         assert!(player.skip_to_queued()); // B shows; Spotify's queue still lists B, C
@@ -271,5 +404,53 @@ mod tests {
         assert_eq!(player.queue.as_ref().unwrap().queue.len(), 1);
         assert!(player.skip_to_queued());
         assert_eq!(shown_name(&player), "C");
+    }
+
+    #[test]
+    fn a_requested_track_stays_until_the_device_plays_it() {
+        let mut player = player();
+        let before = player.currently_playing().cloned();
+        assert!(player.skip_to_queued());
+        player.mark_requested(before.as_ref());
+        // the device still reports the track before
+        assert_eq!(
+            player.show_device_playback(track("A"), true, Some(91_000)),
+            Some(false)
+        );
+        assert_eq!(shown_name(&player), "B");
+        // then it plays the requested one
+        assert_eq!(
+            player.show_device_playback(track("B"), true, Some(0)),
+            Some(false)
+        );
+        assert!(player.requested.is_none());
+        assert_eq!(shown_name(&player), "B");
+    }
+
+    #[test]
+    fn a_request_the_device_never_follows_stops_holding_the_track() {
+        let mut player = player();
+        assert!(player.skip_to_queued());
+        let long_ago = std::time::Instant::now() - std::time::Duration::from_secs(60);
+        player.requested = Some(super::Requested {
+            before: vec![track_uri("A")],
+            at: long_ago,
+        });
+        assert_eq!(
+            player.show_device_playback(track("A"), true, Some(91_000)),
+            Some(true)
+        );
+        assert_eq!(shown_name(&player), "A");
+    }
+
+    fn track_uri(id: &str) -> String {
+        format!("spotify:track:{}", id.repeat(22))
+    }
+
+    #[test]
+    fn without_a_playback_it_is_left_to_spotify() {
+        let mut player = PlayerState::default();
+        assert_eq!(player.show_device_playback(track("A"), true, Some(0)), None);
+        assert!(player.currently_playing().is_none());
     }
 }

@@ -273,6 +273,8 @@ On startup the app requests only the playback and the data of the page it reopen
 
 With [`soloist-history`](custom/README.md#played-history) running for a Spotify Soloist device, `PlayedHistory.msgpack` in the cache folder holds the last `played_history_size` tracks that device played, with how long each one played. The recently played tracks page (`g r`) then lists those, newest first, leaving out those played for less than `played_history_min_played_secs`, instead of Spotify's recently played tracks of every device. **Previous** shows the track before the current one right away when that device has played it, instead of when Spotify reports it.
 
+With a Soloist running on this machine, the app also follows its playback through Soloist's events, so track changes, pauses and positions show as they happen. Starting a track shows it at once, Next and Previous as soon as Soloist reports the change, and the covers of the tracks around the playing one are loaded ahead.
+
 ### Streaming
 
 Stream music directly from the terminal. The streaming feature is enabled by default and uses the `rodio-backend` audio backend unless otherwise specified.

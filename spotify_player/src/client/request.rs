@@ -32,6 +32,8 @@ pub enum ClientRequest {
     GetUserFollowedArtists,
     GetContext(ContextId),
     GetCurrentPlayback,
+    /// Load the cover and details of a track shown before Spotify reported it
+    NewPlaybackShown,
     Search(String),
     AddPlayableToQueue(PlayableId<'static>),
     AddAlbumToQueue(AlbumId<'static>),
