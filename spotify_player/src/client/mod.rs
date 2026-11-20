@@ -429,7 +429,12 @@ impl AppClient {
                 if let Some(ref playback) = playback {
                     self.shuffle(playback.shuffle_state, device_id).await?;
                 }
-                return Ok(None);
+                // the device, volume and the rest stay; without them the playback shows no text
+                // until Spotify is next asked
+                if let Some(playback) = playback.as_mut() {
+                    playback.is_playing = true;
+                }
+                return Ok(playback);
             }
             _ => {}
         }
