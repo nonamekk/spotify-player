@@ -178,8 +178,6 @@ make install
 nix-shell -p spotify-player
 ```
 
-To build from source locally, run `nix-shell` in the root of the source checkout. The provided `shell.nix` will install prerequisites.
-
 ### Docker
 
 **Note**: The streaming feature is disabled in the Docker image.
