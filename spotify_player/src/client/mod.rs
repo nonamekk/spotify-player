@@ -21,7 +21,6 @@ use anyhow::Context as _;
 use anyhow::Result;
 
 use librespot_core::SpotifyUri;
-#[cfg(feature = "streaming")]
 use parking_lot::Mutex;
 
 use rspotify::model::LibraryId;
@@ -78,6 +77,8 @@ pub struct AppClient {
     api_client: WebApiClient,
     #[cfg(feature = "streaming")]
     stream_conn: Arc<Mutex<Option<librespot_connect::Spirc>>>,
+    /// The device last chosen from this app, which `take_over_playback` leaves the playback on
+    chosen_device_id: Arc<Mutex<Option<String>>>,
 }
 
 impl Deref for AppClient {
@@ -180,6 +181,7 @@ impl AppClient {
 
             #[cfg(feature = "streaming")]
             stream_conn: Arc::new(Mutex::new(None)),
+            chosen_device_id: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -367,6 +369,12 @@ impl AppClient {
         request: PlayerRequest,
         mut playback: Option<PlaybackMetadata>,
     ) -> Result<Option<PlaybackMetadata>> {
+        if !matches!(request, PlayerRequest::TransferPlayback(..)) {
+            if let Some(playback) = playback.as_mut() {
+                self.take_over_playback(playback).await?;
+            }
+        }
+
         // handle requests that don't require an active playback
         match request {
             PlayerRequest::TransferPlayback(device_id, force_play) => {
@@ -374,6 +382,7 @@ impl AppClient {
                 // because `TransferPlayback` doesn't require an active playback
                 self.transfer_playback(&device_id, Some(force_play)).await?;
                 tracing::info!("Transferred playback to device with id={}", device_id);
+                *self.chosen_device_id.lock() = Some(device_id);
                 return Ok(None);
             }
             PlayerRequest::StartPlayback(p, shuffle) => {
@@ -468,6 +477,39 @@ impl AppClient {
         }
 
         Ok(Some(playback))
+    }
+
+    /// Move the playback to the preferred device when `take_over_playback` is enabled,
+    /// so that a command from this app plays here rather than on another device.
+    async fn take_over_playback(&self, playback: &mut PlaybackMetadata) -> Result<()> {
+        let is_chosen =
+            playback.device_id.is_some() && *self.chosen_device_id.lock() == playback.device_id;
+        if !config::get_config().app_config.take_over_playback || is_chosen {
+            return Ok(());
+        }
+        let Some(name) = config::get_config().app_config.preferred_device.clone() else {
+            return Ok(());
+        };
+        if playback.device_name == name {
+            return Ok(());
+        }
+
+        let device = self
+            .available_devices()
+            .await?
+            .into_iter()
+            .find(|d| d.name == name);
+        let Some(device_id) = device.and_then(|d| d.id) else {
+            tracing::warn!("Preferred device {name} is not available to take over the playback");
+            return Ok(());
+        };
+
+        self.transfer_playback(&device_id, Some(playback.is_playing))
+            .await?;
+        tracing::info!("Took over the playback on the preferred device {name}");
+        playback.device_name = name;
+        playback.device_id = Some(device_id);
+        Ok(())
     }
 
     /// Restore the previous session's playback on a device, paused, if Spotify has none to resume
@@ -893,10 +935,12 @@ impl AppClient {
             return Ok(None);
         }
 
-        // Prioritize the integrated device; otherwise, use the first available device.
+        // Prioritize the preferred device, then the integrated device; otherwise, use the first available device.
+        let preferred = config::get_config().app_config.preferred_device.clone();
         let id = devices
             .iter()
-            .position(|d| d.is_integrated)
+            .position(|d| Some(&d.name) == preferred.as_ref())
+            .or_else(|| devices.iter().position(|d| d.is_integrated))
             .unwrap_or_default();
 
         Ok(Some(devices.remove(id).id))

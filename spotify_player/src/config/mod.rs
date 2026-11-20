@@ -150,6 +150,12 @@ pub struct AppConfig {
     /// playing track; enabling this pauses that auto-started playback once.
     #[cfg(feature = "streaming")]
     pub pause_on_startup: bool,
+
+    /// Name of the Spotify Connect device to use when no device is active.
+    pub preferred_device: Option<String>,
+
+    /// Move playback to `preferred_device` before running a playback command from this app.
+    pub take_over_playback: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -411,6 +417,9 @@ impl Default for AppConfig {
 
             #[cfg(feature = "streaming")]
             pause_on_startup: false,
+
+            preferred_device: None,
+            take_over_playback: true,
         }
     }
 }

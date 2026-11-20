@@ -261,6 +261,8 @@ After changing the client ID, re-run `spotify_player authenticate` to refresh th
 
 Control Spotify remotely with [Spotify Connect](https://support.spotify.com/us/article/spotify-connect/). Press **D** to list devices, then **enter** to connect.
 
+The app connects to `preferred_device` on startup when no device is active, and with `take_over_playback` (on by default) a playback command from the app moves the playback to it first.
+
 ### Session
 
 The app reopens on the pages that were open when it was closed, with the same selections. A context the app played without Spotify knowing it, such as a radio or the liked tracks, stays the playing context across restarts. When Spotify has no playback to resume on startup, the previous one is restored paused at the same position.

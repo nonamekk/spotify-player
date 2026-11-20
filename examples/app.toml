@@ -28,6 +28,7 @@ cover_img_width = 5
 cover_img_pixels = 16
 seek_duration_secs = 5
 custom_queue = true
+take_over_playback = true
 enable_relative_line_number = false
 
 [device]
