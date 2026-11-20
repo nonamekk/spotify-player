@@ -74,6 +74,36 @@ impl State {
         }
     }
 
+    /// Select the playing track in the page shown, if it lists it: a resumed page comes back with
+    /// the selection it had, while the device may have played on since
+    pub fn select_playing_track(&self) {
+        let Some(uri) = self
+            .player
+            .read()
+            .currently_playing()
+            .and_then(rspotify::model::PlayableItem::id)
+            .map(|id| id.uri())
+        else {
+            return;
+        };
+        let mut ui = self.ui.lock();
+        let PageState::Context {
+            id: Some(context_id),
+            ..
+        } = ui.current_page()
+        else {
+            return;
+        };
+        let position = self
+            .data
+            .read()
+            .context_tracks(context_id)
+            .and_then(|tracks| tracks.iter().position(|t| t.id.uri() == uri));
+        if let Some(i) = position {
+            ui.current_page_mut().select(i);
+        }
+    }
+
     /// Forget the playing Tracks context once Spotify plays something outside of it
     pub fn forget_stale_playing_tracks(&self) {
         let (id, uri) = {

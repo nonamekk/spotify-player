@@ -176,8 +176,8 @@ mod tests {
 
     use super::{SavedPlayback, Session};
     use crate::state::{
-        AppData, ContextId, ContextPageType, ContextPageUIState, LibraryPageUIState, PageState,
-        Playback, PlayingTracks, Track, TracksId,
+        store_data_into_file_cache, AppData, ContextId, ContextPageType, ContextPageUIState,
+        FileCacheKey, LibraryPageUIState, PageState, Playback, PlayingTracks, Track, TracksId,
     };
 
     const SEED: &str = "4uLU6hMCjMI75M1A2tKUQC";
@@ -270,5 +270,76 @@ mod tests {
                 Some(Offset::Uri(_))
             ))
         ));
+    }
+
+    /// A playback of the track `id` on Soloist
+    fn playback_of(id: &str) -> rspotify::model::CurrentPlaybackContext {
+        let mut playback: rspotify::model::CurrentPlaybackContext =
+            serde_json::from_value(serde_json::json!({
+                "device": {"id": "box", "is_active": true, "is_private_session": false,
+                           "is_restricted": false, "name": "box-spot", "type": "Computer",
+                           "volume_percent": 50},
+                "repeat_state": "off", "shuffle_state": false, "context": null, "timestamp": 0,
+                "progress_ms": 0, "is_playing": true, "item": null,
+                "currently_playing_type": "track", "actions": {"disallows": {}},
+            }))
+            .unwrap();
+        let record = soloist_history::Record {
+            id: id.to_owned(),
+            name: id.to_owned(),
+            artists: vec![("4yAfjEDlkmMb7uLcN3Ot9K".to_owned(), "Artist".to_owned())],
+            album_id: "4LXJ5XxclRopTjLBXpyptg".to_owned(),
+            album: "Album".to_owned(),
+            ..soloist_history::Record::default()
+        };
+        playback.item = crate::state::played_history::full_track(&record)
+            .map(rspotify::model::PlayableItem::Track);
+        playback
+    }
+
+    #[test]
+    fn a_resumed_radio_page_keeps_its_list_and_selects_the_playing_track() {
+        let dir =
+            std::env::temp_dir().join(format!("spotify-player-resume-{}", std::process::id()));
+        let (config_dir, cache_dir) = (dir.join("config"), dir.join("cache"));
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::create_dir_all(&cache_dir).unwrap();
+
+        // the previous session ended on the playing radio's page
+        let radio = radio();
+        let radio_id = ContextId::Tracks(radio.id.clone());
+        let page = PageState::Context {
+            id: Some(radio_id.clone()),
+            context_page_type: ContextPageType::Browsing(radio_id.clone()),
+            state: Some(ContextPageUIState::new_tracks()),
+        };
+        let session = Session {
+            history: vec![page],
+            playback: None,
+        };
+        store_data_into_file_cache(FileCacheKey::Session, &cache_dir, &session).unwrap();
+        store_data_into_file_cache(FileCacheKey::PlayingTracks, &cache_dir, &Some(radio)).unwrap();
+
+        crate::config::set_config(crate::config::Configs::new(&config_dir, &cache_dir).unwrap());
+        let state = crate::state::State::new(false, std::sync::Arc::default());
+
+        // the page lists the radio as it was played, not a new one
+        let names: Vec<_> = state
+            .data
+            .read()
+            .context_tracks(&radio_id)
+            .unwrap()
+            .iter()
+            .map(|t| t.name.clone())
+            .collect();
+        assert_eq!(names, [SEED, NEXT]);
+
+        // the page comes back selecting the first track, while the device has moved on to NEXT
+        state.ui.lock().current_page_mut().select(0);
+        state.player.write().playback = Some(playback_of(NEXT));
+        state.select_playing_track();
+        assert_eq!(state.ui.lock().current_page_mut().selected(), Some(1));
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
