@@ -426,7 +426,8 @@ impl AppClient {
                 self.start_playback(p, device_id).await?;
                 // For some reasons, when starting a new playback, the integrated `spotify_player`
                 // client doesn't respect the initial shuffle state, so we need to manually update the state
-                if let Some(ref playback) = playback {
+                let integrated = config::get_config().app_config.device.name.as_str();
+                if let Some(playback) = playback.as_ref().filter(|p| p.device_name == integrated) {
                     self.shuffle(playback.shuffle_state, device_id).await?;
                 }
                 // the device, volume and the rest stay; without them the playback shows no text
