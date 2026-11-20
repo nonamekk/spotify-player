@@ -253,12 +253,16 @@ impl UserData {
     }
 }
 
+/// Held while a cache file is written, so two writes never share its temporary file
+static FILE_CACHE_WRITE: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
 pub fn store_data_into_file_cache<T: Serialize>(
     key: FileCacheKey,
     cache_folder: &Path,
     data: &T,
 ) -> std::io::Result<()> {
     let path = cache_folder.join(format!("{key:?}_cache.json"));
+    let _writing = FILE_CACHE_WRITE.lock();
     // written next to the cache file and moved over it, so a reader never sees a partial file
     let tmp_path = path.with_extension("json.tmp");
     let mut f = BufWriter::new(std::fs::File::create(&tmp_path)?);

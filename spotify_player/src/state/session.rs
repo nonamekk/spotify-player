@@ -54,11 +54,15 @@ pub fn start_session_saver(state: &SharedState) {
     loop {
         std::thread::sleep(SAVE_INTERVAL);
 
-        let session = Session::capture(&state.ui.lock());
+        // the UI stays locked until the session is written: the store on quit needs that lock,
+        // so it always writes after this one and an older session can't replace the last one
+        let ui = state.ui.lock();
+        let session = Session::capture(&ui);
         if session != stored {
             store_session(&session);
             stored = session;
         }
+        drop(ui);
     }
 }
 
