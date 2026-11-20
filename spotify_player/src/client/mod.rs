@@ -41,9 +41,28 @@ use serde::Deserialize;
 pub(crate) use spotify::{PkceWebApiClient, WebApiClient};
 
 fn patch_missing_track_external_ids(response: &mut serde_json::Value) {
-    let Some(item) = response.get_mut("item") else {
-        return;
-    };
+    if let Some(item) = response.get_mut("item") {
+        add_missing_external_ids(item);
+    }
+}
+
+/// The queue response, parsed with the `external_ids` its tracks lack added as for the playback:
+/// without them every track parses as `PlayableItem::Unknown`
+fn parse_queue_response(text: &str) -> Result<rspotify::model::CurrentUserQueue> {
+    let mut response: serde_json::Value = serde_json::from_str(text)?;
+    if let Some(item) = response.get_mut("currently_playing") {
+        add_missing_external_ids(item);
+    }
+    if let Some(items) = response
+        .get_mut("queue")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        items.iter_mut().for_each(add_missing_external_ids);
+    }
+    Ok(serde_json::from_value(response)?)
+}
+
+fn add_missing_external_ids(item: &mut serde_json::Value) {
     if item.get("type").and_then(serde_json::Value::as_str) != Some("track")
         || item.get("external_ids").is_some()
     {
@@ -781,7 +800,7 @@ impl AppClient {
                 self.delete_from_library(state, id).await?;
             }
             ClientRequest::GetCurrentUserQueue => {
-                let queue = self.current_user_queue().await?;
+                let queue = self.current_user_queue2().await?;
                 state.player.write().queue = Some(queue);
             }
             ClientRequest::ReorderPlaylistItems {
@@ -1940,6 +1959,15 @@ impl AppClient {
         Ok(all_items)
     }
 
+    /// Get the user's queue
+    pub async fn current_user_queue2(&self) -> Result<rspotify::model::CurrentUserQueue> {
+        let text = self
+            .api_client
+            .api_get("me/player/queue", &Query::new())
+            .await?;
+        parse_queue_response(&text)
+    }
+
     pub async fn current_playback2(
         &self,
     ) -> Result<Option<rspotify::model::CurrentPlaybackContext>> {
@@ -2970,5 +2998,33 @@ mod tests {
             .unwrap();
 
         assert!(matches!(playback.item, Some(PlayableItem::Track(_))));
+    }
+
+    #[test]
+    fn parses_queued_tracks_without_external_ids_as_tracks() {
+        let track = |id: &str| {
+            serde_json::json!({
+                "album": {"album_type": "single", "artists": [], "external_urls": {}, "href": null,
+                          "id": "6PbCMUiGA9M7BA5tNW9L1H", "images": [], "name": "Deti Techno"},
+                "artists": [], "disc_number": 1, "duration_ms": 200_000, "explicit": false,
+                "external_urls": {}, "href": null, "id": id, "is_local": false, "name": id,
+                "preview_url": null, "track_number": 1, "type": "track"
+            })
+        };
+        let response = serde_json::json!({
+            "currently_playing": track("6t7WriKgVszATnrdBKSUAf"),
+            "queue": [track("4uLU6hMCjMI75M1A2tKUQC"), track("3n3Ppam7vgaVa1iaRUc9Lp")],
+        });
+
+        let queue = super::parse_queue_response(&response.to_string()).unwrap();
+
+        assert!(matches!(
+            queue.currently_playing,
+            Some(PlayableItem::Track(_))
+        ));
+        assert!(queue
+            .queue
+            .iter()
+            .all(|item| matches!(item, PlayableItem::Track(_))));
     }
 }
