@@ -9,9 +9,10 @@ use crate::{
     state::{
         load_data_from_file_cache, radios, store_data_into_file_cache, Album, AlbumId, Artist,
         ArtistId, Category, Context, ContextId, Device, FileCacheKey, Item, ItemId, MemoryCaches,
-        Playback, PlaybackMetadata, Playlist, PlaylistFolderItem, PlaylistId, SearchResults,
-        SharedState, Show, ShowId, Track, TrackId, UserId, TTL_CACHE_DURATION,
-        USER_LIKED_TRACKS_URI, USER_RECENTLY_PLAYED_TRACKS_URI, USER_TOP_TRACKS_URI,
+        PageState, Playback, PlaybackMetadata, Playlist, PlaylistFolderItem, PlaylistId,
+        SearchResults, SharedState, Show, ShowId, Track, TrackId, UserId, TTL_CACHE_DURATION,
+        USER_LIKED_TRACKS_ID, USER_LIKED_TRACKS_URI, USER_RECENTLY_PLAYED_TRACKS_URI,
+        USER_TOP_TRACKS_URI,
     },
 };
 
@@ -27,6 +28,7 @@ use rspotify::model::LibraryId;
 use rspotify::{http::Query, prelude::*};
 
 mod handlers;
+mod liked_tracks;
 mod middleware;
 mod request;
 mod soloist;
@@ -694,7 +696,7 @@ impl AppClient {
                                 desc: "User's recently played tracks".to_string(),
                             },
                             USER_LIKED_TRACKS_URI => {
-                                let tracks = self.current_user_saved_tracks().await?;
+                                let tracks = self.liked_tracks_for_page(state).await?;
                                 let tracks_hm = tracks
                                     .iter()
                                     .map(|t| (t.id.uri(), t.clone()))
@@ -980,14 +982,11 @@ impl AppClient {
         }
     }
 
-    /// Get the saved (liked) tracks of the current user
+    /// Get the saved (liked) tracks of the current user, up to date when it returns
     pub async fn current_user_saved_tracks(&self) -> Result<Vec<Track>> {
-        let cache_folder = &config::get_config().cache_folder;
-        let cached: LikedTracks =
-            load_data_from_file_cache(FileCacheKey::LikedTracks, cache_folder).unwrap_or_default();
-        let liked = match self.liked_tracks_since(&cached).await {
-            Ok(Some(liked)) => liked,
-            Ok(None) => self.all_liked_tracks().await?,
+        let cached = load_liked_tracks();
+        let refresh = match check_liked_tracks(&cached, |offset| self.liked_page(offset)).await {
+            Ok(refresh) => refresh,
             // e.g. rate limited: the cached tracks are still the liked tracks but for recent changes
             Err(err) if !cached.tracks.is_empty() => {
                 tracing::warn!(
@@ -997,62 +996,90 @@ impl AppClient {
             }
             Err(err) => return Err(err),
         };
-        store_data_into_file_cache(FileCacheKey::LikedTracks, cache_folder, &liked)
-            .context("store the liked tracks into the cache folder")?;
+        let liked = liked_tracks_up_to_date(refresh, Pace::Now, |offset| self.liked_page(offset))
+            .await?
+            .context("the liked tracks weren't brought up to date")?;
+        store_liked_tracks(&liked)?;
         Ok(liked.tracks)
     }
 
-    async fn all_liked_tracks(&self) -> Result<LikedTracks> {
-        let saved = self
-            .all_paging_items::<rspotify::model::SavedTrack>(
-                "me/tracks",
-                0, // we don't know the total number of saved tracks beforehand
-            )
-            .await?;
-        // a first page tells the total, which the paging doesn't keep
-        let total = self.liked_tracks_page(0).await?.total;
-        Ok(LikedTracks {
-            total,
-            tracks: saved
-                .into_iter()
-                .filter_map(|t| Track::try_from_full_track(t.track))
-                .collect(),
-        })
-    }
-
-    /// The cached liked tracks with those liked since, newest first, when Spotify's total adds up
-    /// to them (else some were unliked, and only fetching them all tells which)
-    async fn liked_tracks_since(&self, cached: &LikedTracks) -> Result<Option<LikedTracks>> {
-        const PAGES: u32 = 4;
-        let Some(newest) = cached.tracks.first() else {
-            return Ok(None);
+    /// The liked tracks to show on their page at once. When some were unliked in another app,
+    /// they're found in the background, a request every few seconds, and the page updates then.
+    async fn liked_tracks_for_page(&self, state: &SharedState) -> Result<Vec<Track>> {
+        let cached = load_liked_tracks();
+        let Some(running) = liked_tracks::Running::start() else {
+            return Ok(cached.tracks);
+        };
+        let refresh = match check_liked_tracks(&cached, |offset| self.liked_page(offset)).await {
+            Ok(refresh) => refresh,
+            Err(err) if !cached.tracks.is_empty() => {
+                tracing::warn!(
+                    "Failed to check the liked tracks, showing the cached ones: {err:#}"
+                );
+                return Ok(cached.tracks);
+            }
+            Err(err) => return Err(err),
+        };
+        let refresh = match refresh {
+            LikedRefresh::Done(liked) => {
+                let liked = LikedTracks::from_slots(liked);
+                store_liked_tracks(&liked)?;
+                return Ok(liked.tracks);
+            }
+            // nothing cached to show: request them all now, as before
+            LikedRefresh::FetchAll if cached.tracks.is_empty() => {
+                let liked = liked_tracks_up_to_date(LikedRefresh::FetchAll, Pace::Now, |offset| {
+                    self.liked_page(offset)
+                })
+                .await?
+                .context("the liked tracks weren't requested")?;
+                store_liked_tracks(&liked)?;
+                return Ok(liked.tracks);
+            }
+            refresh => refresh,
+        };
+        let shown = match &refresh {
+            LikedRefresh::Search { new, cached, .. } => {
+                new.iter().chain(cached).flatten().cloned().collect()
+            }
+            _ => cached.tracks,
         };
 
-        let mut added = Vec::new();
-        let mut added_items = 0;
-        for page_index in 0..PAGES {
-            let page = self.liked_tracks_page(page_index * 50).await?;
-            for saved in page.items {
-                let Some(track) = Track::try_from_full_track(saved.track) else {
-                    added_items += 1;
-                    continue;
-                };
-                if track.id == newest.id {
-                    let complete = page.total == cached.total + added_items;
-                    added.extend_from_slice(&cached.tracks);
-                    return Ok(complete.then_some(LikedTracks {
-                        total: page.total,
-                        tracks: added,
-                    }));
+        let client = self.clone();
+        let state = state.clone();
+        tokio::task::spawn(async move {
+            let _running = running;
+            match liked_tracks_up_to_date(refresh, Pace::Background, |offset| {
+                client.liked_page(offset)
+            })
+            .await
+            {
+                Ok(Some(liked)) => {
+                    if let Err(err) = keep_liked_tracks(&state, &liked) {
+                        tracing::warn!("Failed to keep the liked tracks: {err:#}");
+                    }
                 }
-                added_items += 1;
-                added.push(track);
+                Ok(None) => tracing::info!(
+                    "Stopped updating the liked tracks: Spotify limits the rate of requests"
+                ),
+                Err(err) => tracing::warn!("Failed to update the liked tracks: {err:#}"),
             }
-            if page.next.is_none() {
-                break;
-            }
-        }
-        Ok(None)
+        });
+        Ok(shown)
+    }
+
+    /// A page of Spotify's liked items from `offset`
+    async fn liked_page(&self, offset: usize) -> Result<LikedPage> {
+        let page = self.liked_tracks_page(u32::try_from(offset)?).await?;
+        Ok(LikedPage {
+            total: usize::try_from(page.total)?,
+            has_next: page.next.is_some(),
+            items: page
+                .items
+                .into_iter()
+                .map(|saved| Track::try_from_full_track(saved.track))
+                .collect(),
+        })
     }
 
     async fn liked_tracks_page(
@@ -2230,19 +2257,337 @@ fn preferred_device() -> Option<String> {
 struct LikedTracks {
     total: u32,
     tracks: Vec<Track>,
+    /// Positions in Spotify's list of the items that aren't tracks
+    #[serde(default)]
+    skipped: Vec<u32>,
 }
 
 impl LikedTracks {
     /// Remove an unliked track, `false` if it wasn't cached
     fn remove(&mut self, uri: &str) -> bool {
-        let count = self.tracks.len();
-        self.tracks.retain(|track| track.id.uri() != uri);
-        if self.tracks.len() == count {
+        let Some(index) = self.tracks.iter().position(|track| track.id.uri() == uri) else {
             return false;
+        };
+        self.tracks.remove(index);
+        // the items that aren't tracks after it move up by one
+        let mut position = u32::try_from(index).unwrap_or(u32::MAX);
+        for &skipped in &self.skipped {
+            if skipped <= position {
+                position += 1;
+            }
+        }
+        for skipped in &mut self.skipped {
+            if *skipped > position {
+                *skipped -= 1;
+            }
         }
         self.total = self.total.saturating_sub(1);
         true
     }
+
+    /// The liked items in Spotify's order, `None` for those that aren't tracks. `None` when the
+    /// cache doesn't tell where those are (written before it kept their positions).
+    fn slots(&self) -> Option<Vec<Option<Track>>> {
+        if self.tracks.len() + self.skipped.len() != usize::try_from(self.total).ok()? {
+            return None;
+        }
+        let skipped: HashSet<u32> = self.skipped.iter().copied().collect();
+        let mut tracks = self.tracks.iter();
+        (0..self.total)
+            .map(|position| {
+                if skipped.contains(&position) {
+                    Some(None)
+                } else {
+                    tracks.next().map(|track| Some(track.clone()))
+                }
+            })
+            .collect()
+    }
+
+    fn from_slots(slots: Vec<Option<Track>>) -> Self {
+        let mut liked = Self {
+            total: u32::try_from(slots.len()).unwrap_or(u32::MAX),
+            ..Self::default()
+        };
+        for (position, slot) in slots.into_iter().enumerate() {
+            match slot {
+                Some(track) => liked.tracks.push(track),
+                None => liked
+                    .skipped
+                    .push(u32::try_from(position).unwrap_or(u32::MAX)),
+            }
+        }
+        liked
+    }
+}
+
+/// Requests of a background liked tracks refresh are this far apart, so they never add up to
+/// Spotify's rate limit, which would hold back every other request too
+const BACKGROUND_PACE: std::time::Duration = std::time::Duration::from_secs(2);
+/// Pages a search for unliked tracks requests at most before it requests every liked track:
+/// finding one takes up to 9 in a list of 6400
+const MAX_UNLIKED_PROBES: usize = 20;
+
+/// How a liked tracks refresh spaces its requests after the first pages
+#[derive(Clone, Copy)]
+enum Pace {
+    /// One after the other, for an answer now
+    Now,
+    /// `BACKGROUND_PACE` apart, stopping once Spotify limits the rate of requests
+    Background,
+}
+
+impl Pace {
+    /// Wait before the next request; `false` when a background refresh should stop
+    async fn wait(self, started: std::time::Instant) -> bool {
+        match self {
+            Self::Now => true,
+            Self::Background => {
+                tokio::time::sleep(BACKGROUND_PACE).await;
+                !middleware::rate_limited_since(started)
+            }
+        }
+    }
+}
+
+/// What comparing Spotify's newest liked items with the cached ones tells
+enum LikedRefresh {
+    /// The liked items, complete
+    Done(Vec<Option<Track>>),
+    /// Some cached items after the anchor were unliked elsewhere: `search` finds them
+    Search {
+        /// The items liked since the cache was written
+        new: Vec<Option<Track>>,
+        /// The cached items from the anchor on
+        cached: Vec<Option<Track>>,
+        search: liked_tracks::RemovalSearch,
+    },
+    /// The cache doesn't line up with Spotify's list: only requesting it all tells what changed
+    FetchAll,
+}
+
+/// The result of a search for unliked tracks
+enum Unliked {
+    Found(Vec<Option<Track>>),
+    /// Stopped for Spotify's rate limit
+    Stopped,
+    /// The lists didn't line up, or the search took too many requests
+    Unclear,
+}
+
+/// A page of Spotify's liked items, `None` for those that aren't tracks
+struct LikedPage {
+    items: Vec<Option<Track>>,
+    /// Spotify's count of the liked items
+    total: usize,
+    has_next: bool,
+}
+
+/// Compare Spotify's newest liked items (at most 4 pages, from `fetch`) with the cached ones
+async fn check_liked_tracks<F, Fut>(cached: &LikedTracks, fetch: F) -> Result<LikedRefresh>
+where
+    F: Fn(usize) -> Fut,
+    Fut: std::future::Future<Output = Result<LikedPage>>,
+{
+    const PAGES: usize = 4;
+    let Some(cached) = cached.slots().filter(|slots| !slots.is_empty()) else {
+        return Ok(LikedRefresh::FetchAll);
+    };
+    let cached_keys = liked_keys(&cached);
+
+    let mut newest = Vec::new();
+    let mut total = 0;
+    let mut anchor = None;
+    for page_index in 0..PAGES {
+        let page = fetch(page_index * liked_tracks::PAGE).await?;
+        total = page.total;
+        newest.extend(page.items);
+        anchor = liked_tracks::find_anchor(&liked_keys(&newest), &cached_keys);
+        if anchor.is_some() || !page.has_next {
+            break;
+        }
+    }
+    let Some(anchor) = anchor else {
+        return Ok(LikedRefresh::FetchAll);
+    };
+
+    newest.truncate(anchor.new);
+    let mut cached = cached;
+    let cached = cached.split_off(anchor.cached);
+    let expected = newest.len() + cached.len();
+    if total == expected {
+        newest.extend(cached);
+        return Ok(LikedRefresh::Done(newest));
+    }
+    // the anchor's own item lines up, so the search starts after it
+    let Some(search) = liked_tracks::RemovalSearch::new(
+        liked_keys(&cached[1..]),
+        total.saturating_sub(newest.len() + 1),
+    )
+    .filter(|_| total < expected) else {
+        return Ok(LikedRefresh::FetchAll);
+    };
+    Ok(LikedRefresh::Search {
+        new: newest,
+        cached,
+        search,
+    })
+}
+
+/// Finish a liked tracks refresh: find the unliked tracks, or request every liked track when
+/// that doesn't work out. `None` when a background refresh stopped for Spotify's rate limit.
+async fn liked_tracks_up_to_date<F, Fut>(
+    refresh: LikedRefresh,
+    pace: Pace,
+    fetch: F,
+) -> Result<Option<LikedTracks>>
+where
+    F: Fn(usize) -> Fut,
+    Fut: std::future::Future<Output = Result<LikedPage>>,
+{
+    let started = std::time::Instant::now();
+    match refresh {
+        LikedRefresh::Done(liked) => Ok(Some(LikedTracks::from_slots(liked))),
+        LikedRefresh::Search {
+            new,
+            cached,
+            search,
+        } => match find_unliked(new, cached, search, pace, started, &fetch).await? {
+            Unliked::Found(liked) => Ok(Some(LikedTracks::from_slots(liked))),
+            Unliked::Stopped => Ok(None),
+            Unliked::Unclear => all_liked_tracks(pace, started, &fetch).await,
+        },
+        LikedRefresh::FetchAll => all_liked_tracks(pace, started, &fetch).await,
+    }
+}
+
+/// Search Spotify's list after the anchor for the cached tracks it no longer has
+async fn find_unliked<F, Fut>(
+    new: Vec<Option<Track>>,
+    cached: Vec<Option<Track>>,
+    mut search: liked_tracks::RemovalSearch,
+    pace: Pace,
+    started: std::time::Instant,
+    fetch: &F,
+) -> Result<Unliked>
+where
+    F: Fn(usize) -> Fut,
+    Fut: std::future::Future<Output = Result<LikedPage>>,
+{
+    // where the items after the anchor start in Spotify's list
+    let base = new.len() + 1;
+    for _ in 0..MAX_UNLIKED_PROBES {
+        let offset = match search.next() {
+            liked_tracks::Step::Done(removed) => {
+                let removed: HashSet<usize> = removed.into_iter().map(|i| i + 1).collect();
+                let mut liked = new;
+                liked.extend(
+                    cached
+                        .into_iter()
+                        .enumerate()
+                        .filter(|(i, _)| !removed.contains(i))
+                        .map(|(_, item)| item),
+                );
+                return Ok(Unliked::Found(liked));
+            }
+            liked_tracks::Step::Probe(offset) => offset,
+        };
+        if !pace.wait(started).await {
+            return Ok(Unliked::Stopped);
+        }
+        let page = fetch(base + offset).await?;
+        if !search.feed(offset, &liked_keys(&page.items)) {
+            return Ok(Unliked::Unclear);
+        }
+    }
+    Ok(Unliked::Unclear)
+}
+
+/// Request every liked track, page by page. `None` when a background refresh stopped for
+/// Spotify's rate limit.
+async fn all_liked_tracks<F, Fut>(
+    pace: Pace,
+    started: std::time::Instant,
+    fetch: &F,
+) -> Result<Option<LikedTracks>>
+where
+    F: Fn(usize) -> Fut,
+    Fut: std::future::Future<Output = Result<LikedPage>>,
+{
+    let mut liked = Vec::new();
+    loop {
+        let page = fetch(liked.len()).await?;
+        let has_next = page.has_next && !page.items.is_empty();
+        liked.extend(page.items);
+        if !has_next {
+            return Ok(Some(LikedTracks::from_slots(liked)));
+        }
+        if !pace.wait(started).await {
+            return Ok(None);
+        }
+    }
+}
+
+fn liked_keys(items: &[Option<Track>]) -> Vec<liked_tracks::Key> {
+    items
+        .iter()
+        .map(|item| item.as_ref().map(|track| track.id.uri()))
+        .collect()
+}
+
+fn load_liked_tracks() -> LikedTracks {
+    load_data_from_file_cache(
+        FileCacheKey::LikedTracks,
+        &config::get_config().cache_folder,
+    )
+    .unwrap_or_default()
+}
+
+fn store_liked_tracks(liked: &LikedTracks) -> Result<()> {
+    store_data_into_file_cache(
+        FileCacheKey::LikedTracks,
+        &config::get_config().cache_folder,
+        liked,
+    )
+    .context("store the liked tracks into the cache folder")
+}
+
+/// Keep liked tracks brought up to date in the background: in the cache, in the liked marks and
+/// on the shown page, where the selection stays on the same track
+fn keep_liked_tracks(state: &SharedState, liked: &LikedTracks) -> Result<()> {
+    store_liked_tracks(liked)?;
+    let saved: HashMap<String, Track> = liked
+        .tracks
+        .iter()
+        .map(|t| (t.id.uri(), t.clone()))
+        .collect();
+    store_data_into_file_cache(
+        FileCacheKey::SavedTracks,
+        &config::get_config().cache_folder,
+        &saved,
+    )
+    .context("store user's saved tracks into the cache folder")?;
+
+    let liked_id = ContextId::Tracks(USER_LIKED_TRACKS_ID.to_owned());
+    let mut ui = state.ui.lock();
+    let shows_liked = matches!(
+        ui.current_page(),
+        PageState::Context { id: Some(id), .. } if *id == liked_id
+    );
+    let selected = if shows_liked {
+        ui.current_page_mut().selected()
+    } else {
+        None
+    };
+    let mut data = state.data.write();
+    data.user_data.saved_tracks = saved;
+    if let Some(shown) = data.context_tracks_mut(&liked_id) {
+        let selected = liked_tracks::apply_changes(shown, &liked.tracks, |t| t.id.uri(), selected);
+        if let Some(i) = selected {
+            ui.current_page_mut().select(i);
+        }
+    }
+    Ok(())
 }
 
 /// Remove a track unliked here from the cached liked tracks: the next check compares Spotify's
@@ -2270,7 +2615,10 @@ fn move_seed_track_to_front(tracks: &mut Vec<Track>, seed_track: Track) {
 
 #[cfg(test)]
 mod tests {
-    use super::{move_seed_track_to_front, parse_current_playback_response, LikedTracks};
+    use super::{
+        check_liked_tracks, liked_tracks_up_to_date, move_seed_track_to_front,
+        parse_current_playback_response, LikedPage, LikedTracks, Pace,
+    };
     use crate::state::Track;
     use rspotify::model::{Id, PlayableItem, TrackId};
 
@@ -2293,6 +2641,7 @@ mod tests {
         let mut liked = LikedTracks {
             total: 2,
             tracks: vec![unliked.clone(), kept.clone()],
+            skipped: Vec::new(),
         };
 
         assert!(liked.remove(&unliked.id.uri()));
@@ -2303,6 +2652,146 @@ mod tests {
         // a track that isn't cached leaves the count alone
         assert!(!liked.remove(&unliked.id.uri()));
         assert_eq!(liked.total, 1);
+    }
+
+    #[test]
+    fn removing_a_track_moves_the_items_after_it_that_arent_tracks() {
+        let first = sample_track("3n3Ppam7vgaVa1iaRUc9Lp", "first");
+        let unliked = sample_track("4uLU6hMCjMI75M1A2tKUQC", "unliked");
+        let last = sample_track("1301WleyT98MSxVHPZCA6M", "last");
+        // positions: 0 not a track, 1 first, 2 unliked, 3 not a track, 4 last
+        let mut liked = LikedTracks {
+            total: 5,
+            tracks: vec![first, unliked.clone(), last],
+            skipped: vec![0, 3],
+        };
+
+        assert!(liked.remove(&unliked.id.uri()));
+        assert_eq!(liked.total, 4);
+        assert_eq!(liked.skipped, vec![0, 2]);
+    }
+
+    fn liked_track(i: usize) -> Track {
+        sample_track(Box::leak(format!("{i:0>22}").into_boxed_str()), "liked")
+    }
+
+    fn ids(items: &[Option<Track>]) -> Vec<Option<TrackId<'static>>> {
+        items
+            .iter()
+            .map(|item| item.as_ref().map(|t| t.id.clone()))
+            .collect()
+    }
+
+    /// Brings `cached` up to date against Spotify's liked items `spotify`, served in pages of
+    /// 50; the result and the number of pages requested
+    async fn refresh_against(
+        cached: &LikedTracks,
+        spotify: &[Option<Track>],
+    ) -> (LikedTracks, usize) {
+        let requests = std::cell::Cell::new(0);
+        let fetch = |offset: usize| {
+            requests.set(requests.get() + 1);
+            let start = offset.min(spotify.len());
+            let end = (offset + 50).min(spotify.len());
+            std::future::ready(Ok(LikedPage {
+                items: spotify[start..end].to_vec(),
+                total: spotify.len(),
+                has_next: end < spotify.len(),
+            }))
+        };
+        let refresh = check_liked_tracks(cached, &fetch).await.expect("a check");
+        let liked = liked_tracks_up_to_date(refresh, Pace::Now, &fetch)
+            .await
+            .expect("a refresh")
+            .expect("liked tracks");
+        (liked, requests.get())
+    }
+
+    fn cached(items: &[Option<Track>]) -> LikedTracks {
+        LikedTracks::from_slots(items.to_vec())
+    }
+
+    #[tokio::test]
+    async fn only_new_likes_take_one_request() {
+        let library: Vec<_> = (0..300).map(|i| Some(liked_track(i))).collect();
+        let mut spotify = vec![Some(liked_track(1000)), Some(liked_track(1001))];
+        spotify.extend(library.iter().cloned());
+
+        let (liked, requests) = refresh_against(&cached(&library), &spotify).await;
+        assert_eq!(ids(&liked.slots().expect("slots")), ids(&spotify));
+        assert_eq!(requests, 1);
+    }
+
+    #[tokio::test]
+    async fn tracks_unliked_elsewhere_are_found_with_few_requests() {
+        // the newest cached track and one far down were unliked, one other track was liked
+        let mut library: Vec<_> = (0..1000).map(|i| Some(liked_track(i))).collect();
+        library[400] = None;
+        let mut spotify = vec![Some(liked_track(5000))];
+        spotify.extend(
+            library
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| *i != 0 && *i != 700)
+                .map(|(_, item)| item.clone()),
+        );
+
+        let (liked, requests) = refresh_against(&cached(&library), &spotify).await;
+        assert_eq!(ids(&liked.slots().expect("slots")), ids(&spotify));
+        assert!(requests <= 7, "{requests} requests");
+    }
+
+    #[tokio::test]
+    async fn a_cache_without_positions_requests_everything_once() {
+        let library: Vec<_> = (0..120).map(|i| Some(liked_track(i))).collect();
+        let mut spotify = library.clone();
+        spotify[60] = None;
+        // written before the positions were kept: one item too few to line up
+        let mut old = cached(&library[1..]);
+        old.total += 1;
+
+        let (liked, requests) = refresh_against(&old, &spotify).await;
+        assert_eq!(ids(&liked.slots().expect("slots")), ids(&spotify));
+        assert_eq!(requests, 3);
+    }
+
+    #[tokio::test]
+    async fn lists_that_dont_line_up_fall_back_to_requesting_everything() {
+        let library: Vec<_> = (0..300).map(|i| Some(liked_track(i))).collect();
+        let mut spotify = library.clone();
+        spotify.remove(100);
+        // a track the cache doesn't have, where the search reads
+        spotify[105] = Some(liked_track(9999));
+
+        let (liked, _) = refresh_against(&cached(&library), &spotify).await;
+        assert_eq!(ids(&liked.slots().expect("slots")), ids(&spotify));
+    }
+
+    #[test]
+    fn liked_slots_round_trip() {
+        let first = sample_track("3n3Ppam7vgaVa1iaRUc9Lp", "first");
+        let second = sample_track("4uLU6hMCjMI75M1A2tKUQC", "second");
+        let liked = LikedTracks {
+            total: 3,
+            tracks: vec![first.clone(), second.clone()],
+            skipped: vec![1],
+        };
+
+        let slots = liked.slots().expect("slots");
+        let ids: Vec<_> = slots
+            .iter()
+            .map(|s| s.as_ref().map(|t| t.id.clone()))
+            .collect();
+        assert_eq!(ids, vec![Some(first.id), None, Some(second.id)]);
+        assert_eq!(LikedTracks::from_slots(slots).skipped, vec![1]);
+
+        // a cache from before the positions were kept doesn't tell where they are
+        let old = LikedTracks {
+            total: 3,
+            tracks: liked.tracks,
+            skipped: Vec::new(),
+        };
+        assert!(old.slots().is_none());
     }
 
     #[test]

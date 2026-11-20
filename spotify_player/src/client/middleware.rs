@@ -63,6 +63,15 @@ struct RecentGet {
     result: watch::Receiver<Option<Arc<SharedGetResult>>>,
 }
 
+/// When Spotify last limited the rate of requests, for background work that stops then
+static LAST_RATE_LIMIT: parking_lot::Mutex<Option<std::time::Instant>> =
+    parking_lot::Mutex::new(None);
+
+/// Whether Spotify limited the rate of requests since `since`
+pub(super) fn rate_limited_since(since: std::time::Instant) -> bool {
+    LAST_RATE_LIMIT.lock().is_some_and(|at| at >= since)
+}
+
 #[derive(Debug, Default)]
 struct RequestState {
     retry_after_until: Option<Instant>,
@@ -161,6 +170,7 @@ impl SpotifyApiRequestManager {
     }
 
     async fn store_retry_after(&self, retry_after: Duration) {
+        *LAST_RATE_LIMIT.lock() = Some(std::time::Instant::now());
         let retry_after_until = Instant::now() + retry_after + Duration::from_secs(1);
         let mut state = self.state.lock().await;
         if state
