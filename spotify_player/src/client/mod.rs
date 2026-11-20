@@ -2218,8 +2218,10 @@ impl AppClient {
         };
 
         // retrieve current artist for genres if not in cache, after the cover so it doesn't wait for it
+        // Spotify no longer sends the genres to every app; don't ask when they aren't shown
+        let shows_genres = configs.app_config.playback_format.contains("{genres}");
         let curr_artist = match &curr_item {
-            rspotify::model::PlayableItem::Track(full_track) => {
+            rspotify::model::PlayableItem::Track(full_track) if shows_genres => {
                 let cached = state
                     .data
                     .read()
