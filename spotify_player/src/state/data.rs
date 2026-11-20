@@ -22,6 +22,7 @@ pub enum FileCacheKey {
     SavedTracks,
     Session,
     PlayingTracks,
+    LikedTracks,
     Radios,
 }
 

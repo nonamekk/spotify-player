@@ -7,11 +7,11 @@ use crate::{auth, config};
 use crate::{
     auth::AuthConfig,
     state::{
-        radios, store_data_into_file_cache, Album, AlbumId, Artist, ArtistId, Category, Context,
-        ContextId, Device, FileCacheKey, Item, ItemId, MemoryCaches, Playback, PlaybackMetadata,
-        Playlist, PlaylistFolderItem, PlaylistId, SearchResults, SharedState, Show, ShowId, Track,
-        TrackId, UserId, TTL_CACHE_DURATION, USER_LIKED_TRACKS_URI,
-        USER_RECENTLY_PLAYED_TRACKS_URI, USER_TOP_TRACKS_URI,
+        load_data_from_file_cache, radios, store_data_into_file_cache, Album, AlbumId, Artist,
+        ArtistId, Category, Context, ContextId, Device, FileCacheKey, Item, ItemId, MemoryCaches,
+        Playback, PlaybackMetadata, Playlist, PlaylistFolderItem, PlaylistId, SearchResults,
+        SharedState, Show, ShowId, Track, TrackId, UserId, TTL_CACHE_DURATION,
+        USER_LIKED_TRACKS_URI, USER_RECENTLY_PLAYED_TRACKS_URI, USER_TOP_TRACKS_URI,
     },
 };
 
@@ -982,17 +982,90 @@ impl AppClient {
 
     /// Get the saved (liked) tracks of the current user
     pub async fn current_user_saved_tracks(&self) -> Result<Vec<Track>> {
-        let tracks = self
+        let cache_folder = &config::get_config().cache_folder;
+        let cached: LikedTracks =
+            load_data_from_file_cache(FileCacheKey::LikedTracks, cache_folder).unwrap_or_default();
+        let liked = match self.liked_tracks_since(&cached).await {
+            Ok(Some(liked)) => liked,
+            Ok(None) => self.all_liked_tracks().await?,
+            // e.g. rate limited: the cached tracks are still the liked tracks but for recent changes
+            Err(err) if !cached.tracks.is_empty() => {
+                tracing::warn!(
+                    "Failed to check the liked tracks, showing the cached ones: {err:#}"
+                );
+                return Ok(cached.tracks);
+            }
+            Err(err) => return Err(err),
+        };
+        store_data_into_file_cache(FileCacheKey::LikedTracks, cache_folder, &liked)
+            .context("store the liked tracks into the cache folder")?;
+        Ok(liked.tracks)
+    }
+
+    async fn all_liked_tracks(&self) -> Result<LikedTracks> {
+        let saved = self
             .all_paging_items::<rspotify::model::SavedTrack>(
                 "me/tracks",
                 0, // we don't know the total number of saved tracks beforehand
             )
             .await?;
+        // a first page tells the total, which the paging doesn't keep
+        let total = self.liked_tracks_page(0).await?.total;
+        Ok(LikedTracks {
+            total,
+            tracks: saved
+                .into_iter()
+                .filter_map(|t| Track::try_from_full_track(t.track))
+                .collect(),
+        })
+    }
 
-        Ok(tracks
-            .into_iter()
-            .filter_map(|t| Track::try_from_full_track(t.track))
-            .collect())
+    /// The cached liked tracks with those liked since, newest first, when Spotify's total adds up
+    /// to them (else some were unliked, and only fetching them all tells which)
+    async fn liked_tracks_since(&self, cached: &LikedTracks) -> Result<Option<LikedTracks>> {
+        const PAGES: u32 = 4;
+        let Some(newest) = cached.tracks.first() else {
+            return Ok(None);
+        };
+
+        let mut added = Vec::new();
+        let mut added_items = 0;
+        for page_index in 0..PAGES {
+            let page = self.liked_tracks_page(page_index * 50).await?;
+            for saved in page.items {
+                let Some(track) = Track::try_from_full_track(saved.track) else {
+                    added_items += 1;
+                    continue;
+                };
+                if track.id == newest.id {
+                    let complete = page.total == cached.total + added_items;
+                    added.extend_from_slice(&cached.tracks);
+                    return Ok(complete.then_some(LikedTracks {
+                        total: page.total,
+                        tracks: added,
+                    }));
+                }
+                added_items += 1;
+                added.push(track);
+            }
+            if page.next.is_none() {
+                break;
+            }
+        }
+        Ok(None)
+    }
+
+    async fn liked_tracks_page(
+        &self,
+        offset: u32,
+    ) -> Result<rspotify::model::Page<rspotify::model::SavedTrack>> {
+        let offset = offset.to_string();
+        let params = Query::from([
+            ("market", "from_token"),
+            ("limit", "50"),
+            ("offset", &offset),
+        ]);
+        self.http_get("me/tracks", &params).await
     }
 
     /// Get the recently played tracks of the current user
@@ -2149,6 +2222,13 @@ fn preferred_device() -> Option<String> {
         .preferred_device
         .clone()
         .or_else(soloist::local_device_name)
+}
+
+/// The liked tracks, newest first, and Spotify's count of them (which counts items without a track)
+#[derive(Default, serde::Serialize, Deserialize)]
+struct LikedTracks {
+    total: u32,
+    tracks: Vec<Track>,
 }
 
 fn move_seed_track_to_front(tracks: &mut Vec<Track>, seed_track: Track) {
