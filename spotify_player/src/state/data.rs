@@ -1,4 +1,4 @@
-use std::io::{BufReader, BufWriter};
+use std::io::{BufReader, BufWriter, Write};
 use std::{collections::HashMap, path::Path};
 
 use serde::{de::DeserializeOwned, Serialize};
@@ -258,9 +258,12 @@ pub fn store_data_into_file_cache<T: Serialize>(
     data: &T,
 ) -> std::io::Result<()> {
     let path = cache_folder.join(format!("{key:?}_cache.json"));
-    let f = BufWriter::new(std::fs::File::create(path)?);
-    serde_json::to_writer(f, data)?;
-    Ok(())
+    // written next to the cache file and moved over it, so a reader never sees a partial file
+    let tmp_path = path.with_extension("json.tmp");
+    let mut f = BufWriter::new(std::fs::File::create(&tmp_path)?);
+    serde_json::to_writer(&mut f, data)?;
+    f.flush()?;
+    std::fs::rename(tmp_path, path)
 }
 
 pub fn load_data_from_file_cache<T>(key: FileCacheKey, cache_folder: &Path) -> Option<T>
