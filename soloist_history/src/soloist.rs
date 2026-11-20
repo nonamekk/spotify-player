@@ -101,6 +101,17 @@ fn last_part(uri: &str) -> String {
     uri.rsplit([':', '/']).next().unwrap_or_default().to_owned()
 }
 
+/// Send a command to the Soloist whose data directory is `data_dir`, such as
+/// `{"type":"command","command":"pause"}`, over a connection of its own
+pub fn send_command(data_dir: &Path, command: &Value) -> Result<()> {
+    let mut socket = connect(data_dir)?;
+    socket
+        .send(Message::text(command.to_string()))
+        .context("send a command to Soloist")?;
+    let _ = socket.close(None);
+    Ok(())
+}
+
 /// Whether a read error is only the read timing out or being interrupted, not the connection ending
 #[must_use]
 pub fn is_wait(err: &tungstenite::Error) -> bool {

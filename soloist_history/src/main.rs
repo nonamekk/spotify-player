@@ -1,11 +1,13 @@
 //! `soloist-history`: follows the tracks a Spotify Soloist device plays, through Soloist's local
-//! WebSocket API (`soloist -w 127.0.0.1:0`), and appends them to `spotify_player`'s played history.
+//! WebSocket API (`soloist -w 127.0.0.1:0`), appends them to `spotify_player`'s played history, and
+//! presents Soloist to the desktop as an MPRIS player.
 //!
 //! A track is written when another one starts, or when the listener ends: Soloist closed the
 //! connection (it restarted; the service starts the listener again), or the service stopped
 //! (SIGTERM). Either way the track playing at that moment counts until then.
 
 mod follower;
+mod mpris;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -56,6 +58,10 @@ fn run() -> Result<()> {
     let data_dir = soloist_history::soloist::data_dir(&home);
     let mut socket = soloist_history::soloist::connect(&data_dir)?;
     let mut follower = Follower::default();
+    // the history doesn't need the media controls: without a session bus, it goes on without them
+    let mut mpris = mpris::Mpris::new(data_dir)
+        .inspect_err(|err| tracing::warn!("No MPRIS player for Soloist: {err:#}"))
+        .ok();
     while !stop.load(Ordering::Relaxed) {
         match socket.read() {
             Ok(Message::Text(text)) => {
@@ -64,6 +70,9 @@ fn run() -> Result<()> {
                 };
                 if let Some(record) = follower.handle(now_ms(), &event) {
                     history.write(&record)?;
+                }
+                if let Some(Err(err)) = mpris.as_mut().map(|mpris| mpris.handle(&event)) {
+                    tracing::warn!("Failed to show Soloist's playback over MPRIS: {err:#}");
                 }
             }
             Ok(Message::Close(_)) => break,

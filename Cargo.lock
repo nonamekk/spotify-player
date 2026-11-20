@@ -5733,6 +5733,7 @@ dependencies = [
  "serde",
  "serde_json",
  "signal-hook",
+ "souvlaki",
  "toml",
  "tracing",
  "tracing-subscriber",
