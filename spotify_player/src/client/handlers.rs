@@ -236,8 +236,19 @@ fn page_data_requests(page: &PageState) -> Vec<ClientRequest> {
         PageState::Browse {
             state: BrowsePageUIState::CategoryPlaylistList { category, .. },
         } => vec![ClientRequest::GetBrowseCategoryPlaylists(category.clone())],
+        PageState::Library { .. } => library_requests().into(),
         _ => vec![],
     }
+}
+
+/// Requests for the library's data, which is only requested when the library is shown
+pub fn library_requests() -> [ClientRequest; 4] {
+    [
+        ClientRequest::GetUserPlaylists,
+        ClientRequest::GetUserSavedAlbums,
+        ClientRequest::GetUserFollowedArtists,
+        ClientRequest::GetUserSavedShows,
+    ]
 }
 
 fn handle_player_event(

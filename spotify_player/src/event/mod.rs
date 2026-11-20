@@ -734,6 +734,9 @@ fn handle_global_command(
             )))?;
         }
         Command::LibraryPage => {
+            for request in crate::client::library_requests() {
+                client_pub.send(request)?;
+            }
             ui.new_page(PageState::Library {
                 state: LibraryPageUIState::new(),
             });

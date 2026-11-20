@@ -117,14 +117,10 @@ async fn start_app(state: &state::SharedState) -> Result<()> {
         .context("initialize new Spotify session")?;
 
     // request user data
-    client_pub.send(client::ClientRequest::GetCurrentUser)?;
-    client_pub.send(client::ClientRequest::GetUserPlaylists)?;
-    client_pub.send(client::ClientRequest::GetUserFollowedArtists)?;
-    client_pub.send(client::ClientRequest::GetUserSavedAlbums)?;
-    client_pub.send(client::ClientRequest::GetContext(state::ContextId::Tracks(
-        state::USER_LIKED_TRACKS_ID.to_owned(),
-    )))?;
-    client_pub.send(client::ClientRequest::GetUserSavedShows)?;
+    // the library's data is shown from the cache and requested when the library is opened
+    if state.data.read().user_data.user.is_none() {
+        client_pub.send(client::ClientRequest::GetCurrentUser)?;
+    }
     for request in client::restored_page_requests(state) {
         client_pub.send(request)?;
     }

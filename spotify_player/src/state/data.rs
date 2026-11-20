@@ -23,6 +23,7 @@ pub enum FileCacheKey {
     Session,
     PlayingTracks,
     LikedTracks,
+    CurrentUser,
     Radios,
 }
 
@@ -201,7 +202,7 @@ impl UserData {
     /// Construct a new user data based on file caches
     pub fn new_from_file_caches(cache_folder: &Path) -> Self {
         Self {
-            user: None,
+            user: load_data_from_file_cache(FileCacheKey::CurrentUser, cache_folder),
             playlists: load_data_from_file_cache(FileCacheKey::Playlists, cache_folder)
                 .unwrap_or_default(),
             playlist_folder_node: load_data_from_file_cache(

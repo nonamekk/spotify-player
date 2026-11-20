@@ -597,6 +597,12 @@ impl AppClient {
             }
             ClientRequest::GetCurrentUser => {
                 let user = self.current_user().await?;
+                store_data_into_file_cache(
+                    FileCacheKey::CurrentUser,
+                    &config::get_config().cache_folder,
+                    &user,
+                )
+                .context("store the current user into the cache folder")?;
                 state.data.write().user_data.user = Some(user);
             }
             ClientRequest::Player(request) => {
