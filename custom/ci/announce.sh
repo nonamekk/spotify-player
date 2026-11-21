@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # Opens an issue for a spotify-player release newer than the one this branch sits on, once per
 # release: its notes and the files both it and this branch change. Run from the repository root of
-# a full clone (tags included), with GH_TOKEN set.
+# a full clone, with GH_TOKEN set.
 set -euo pipefail
 upstream=aome510/spotify-player
 latest=$(gh api "repos/$upstream/releases/latest" --jq .tag_name)
+# spotify-player's release tags, which a fork doesn't have: the release this branch sits on is the
+# newest of them in its history
+git fetch --quiet --no-tags "https://github.com/$upstream" 'refs/tags/v*:refs/tags/v*'
 base=$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD)
 echo "spotify-player $latest, this branch on $base"
 [ "$latest" = "$base" ] && exit 0
