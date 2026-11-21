@@ -2,7 +2,10 @@
 # Publishes the package in ./dist (from build.sh) as release RELEASE, then makes it the package of
 # the pacman repository kept as the assets of the `pacman-repo` release.
 set -euo pipefail
+cpu=$(sed -n 's/^_cpu=//p' "$(dirname "$(readlink -f "$0")")/PKGBUILD")
 {
+  echo "Built with \`-C target-cpu=$cpu\`: it runs only on CPUs of that generation (\`znver5\` is Zen 5), other CPUs stop it with \"illegal instruction\"."
+  echo
   echo "spotify-player ${TAG#v} ([upstream release](https://github.com/aome510/spotify-player/releases/tag/$TAG)) with these commits of \`spotify-player-custom\` ($GITHUB_SHA):"
   echo
   cat dist/commits.md
@@ -10,7 +13,7 @@ set -euo pipefail
   echo "Install through the pacman repository (see \`custom/README.md\`), or once: \`sudo pacman -U <package URL>\`."
 } > notes.md
 gh release create "$RELEASE" dist/*.pkg.tar.zst --repo "$GITHUB_REPOSITORY" \
-  --target "$GITHUB_SHA" --title "spotify-player ${TAG#v}, custom" --notes-file notes.md
+  --target "$GITHUB_SHA" --title "spotify-player ${TAG#v}, custom, $cpu" --notes-file notes.md
 
 mkdir repo
 cp dist/*.pkg.tar.zst repo/
