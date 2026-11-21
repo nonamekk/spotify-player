@@ -95,3 +95,21 @@ pub fn filtered_items_from_query<'a, T: std::fmt::Display>(
         })
         .collect::<Vec<_>>()
 }
+
+/// How often memory freed inside glibc's allocator is handed back to the system
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+const MEMORY_TRIM_INTERVAL: std::time::Duration = std::time::Duration::from_mins(1);
+
+/// Hand the memory glibc's allocator keeps after it's freed back to the system, every minute.
+/// glibc returns a thread arena's memory only from its end, so after a burst, such as covers
+/// decoded on a tokio worker or the liked tracks parsed, each arena stays at its peak size. A trim
+/// takes about 3 ms after a burst and 0.1 ms when there's nothing to hand back.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[allow(unsafe_code)]
+pub fn trim_memory_periodically() {
+    loop {
+        std::thread::sleep(MEMORY_TRIM_INTERVAL);
+        // SAFETY: `malloc_trim` has no preconditions and takes each arena's lock itself
+        unsafe { libc::malloc_trim(0) };
+    }
+}

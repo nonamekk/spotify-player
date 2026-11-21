@@ -162,6 +162,12 @@ async fn start_app(state: &state::SharedState) -> Result<()> {
         }
     });
 
+    // hands memory freed after bursts back to the system
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    std::thread::Builder::new()
+        .name("memory-trim".to_string())
+        .spawn(utils::trim_memory_periodically)?;
+
     // player event watcher task
     std::thread::Builder::new()
         .name("player-event-watcher".to_string())

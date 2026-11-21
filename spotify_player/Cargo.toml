@@ -73,6 +73,9 @@ soloist_history = { path = "../soloist_history" }
 [dev-dependencies]
 wiremock = "0.6.5"
 
+[target.'cfg(all(target_os = "linux", target_env = "gnu"))'.dependencies]
+libc = "0.2.189"
+
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies.winit]
 version = "0.30.13"
 optional = true

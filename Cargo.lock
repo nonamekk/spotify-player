@@ -5335,6 +5335,7 @@ dependencies = [
  "html-escape",
  "http",
  "image",
+ "libc",
  "librespot-connect",
  "librespot-core",
  "librespot-metadata",
