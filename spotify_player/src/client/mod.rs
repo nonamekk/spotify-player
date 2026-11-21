@@ -2443,14 +2443,14 @@ impl AppClient {
     }
 
     #[cfg(feature = "pixelate")]
+    /// Pixelate a cover by shrinking it to `cover_img_pixels`. It's kept at that size: drawing it
+    /// scales it up with nearest-neighbor, which keeps the blocks sharp, and a 256 px cover takes
+    /// 0.2 MB of memory where the original 640 px one takes 1.2 MB.
     fn pixelate_image(image: &mut image::DynamicImage) {
         let pixels = config::get_config().app_config.cover_img_pixels;
-        let pixelated_image = image.resize(pixels, pixels, image::imageops::FilterType::Nearest);
-        *image = pixelated_image.resize(
-            image.width(),
-            image.height(),
-            image::imageops::FilterType::Nearest,
-        );
+        if pixels < image.width().max(image.height()) {
+            *image = image.resize(pixels, pixels, image::imageops::FilterType::Nearest);
+        }
     }
 
     /// Process a list of albums, which includes
@@ -2476,7 +2476,8 @@ impl AppClient {
     }
 }
 
-/// Next and previous tracks whose covers are loaded ahead of their playing (about 1.2 MB each)
+/// Next and previous tracks whose covers are loaded ahead of their playing (1.2 MB of memory each,
+/// 0.2 MB pixelated to 256 px)
 const COVER_AHEAD: usize = 15;
 const COVER_BACK: usize = 10;
 /// Covers loaded at a time either way, the nearest tracks' first

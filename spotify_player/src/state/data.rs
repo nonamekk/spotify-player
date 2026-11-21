@@ -85,8 +85,10 @@ impl MemoryCaches {
             search: ttl_cache::TtlCache::new(64),
             lyrics: ttl_cache::TtlCache::new(64),
             genres: ttl_cache::TtlCache::new(64),
+            // the covers loaded around the playing track (26, see `client::COVER_AHEAD`) and a
+            // few more; an original cover takes 1.2 MB of memory
             #[cfg(feature = "image")]
-            images: ttl_cache::TtlCache::new(64),
+            images: ttl_cache::TtlCache::new(32),
         }
     }
 

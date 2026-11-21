@@ -26,12 +26,14 @@ impl CoverImage {
     pub fn new(picker: &Picker, img: &DynamicImage, area: Rect) -> Result<Self> {
         if picker.protocol_type() == ProtocolType::Iterm2 {
             Ok(Self::Iterm2 {
-                escape: encode_iterm2(img, area)?,
+                escape: encode_iterm2(&scale_to(picker, img, area), area)?,
                 drawn: false,
             })
         } else {
+            // `Scale`, not `Fit`: a pixelated cover is smaller than its area and has to grow, with
+            // nearest-neighbor, `Scale`'s default filter
             let protocol = picker
-                .new_protocol(img.clone(), area.into(), Resize::Fit(None))
+                .new_protocol(img.clone(), area.into(), Resize::Scale(None))
                 .context("encode cover image protocol")?;
             Ok(Self::Widget(Box::new(protocol)))
         }
@@ -67,6 +69,25 @@ fn reserve_area(frame: &mut Frame, area: Rect) {
 }
 
 /// Encode `img` as a cursor-anchored, cell-sized iTerm2 inline-image escape sequence.
+/// A cover smaller than `area`, such as a pixelated one, scaled up to it with nearest-neighbor.
+/// iTerm2 scales an image to its cells smoothly, which would blur the blocks.
+fn scale_to<'a>(
+    picker: &Picker,
+    img: &'a DynamicImage,
+    area: Rect,
+) -> std::borrow::Cow<'a, DynamicImage> {
+    let font = picker.font_size();
+    let (width, height) = (
+        u32::from(area.width) * u32::from(font.width),
+        u32::from(area.height) * u32::from(font.height),
+    );
+    if img.width() < width && img.height() < height {
+        std::borrow::Cow::Owned(img.resize(width, height, image::imageops::FilterType::Nearest))
+    } else {
+        std::borrow::Cow::Borrowed(img)
+    }
+}
+
 fn encode_iterm2(img: &DynamicImage, area: Rect) -> Result<String> {
     let mut png = Vec::new();
     img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
@@ -96,4 +117,34 @@ fn write_iterm2(escape: &str, area: Rect) -> std::io::Result<()> {
     write!(out, "\x1b[{};{}H{escape}", area.y + 1, area.x + 1)?;
     out.write_all(b"\x1b8")?; // DEC restore cursor
     out.flush()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scale_to;
+    use image::{DynamicImage, GenericImageView};
+    use ratatui::layout::Rect;
+    use ratatui_image::picker::Picker;
+    use std::borrow::Cow;
+
+    #[test]
+    fn a_pixelated_cover_is_scaled_up_to_its_area_with_sharp_blocks() {
+        // cells of 10 x 20 px: 10 x 5 cells are 100 x 100 px
+        let picker = Picker::halfblocks();
+        let area = Rect::new(0, 0, 10, 5);
+        let mut small = DynamicImage::new_rgb8(4, 4);
+        small
+            .as_mut_rgb8()
+            .unwrap()
+            .put_pixel(0, 0, image::Rgb([255, 0, 0]));
+
+        let scaled = scale_to(&picker, &small, area);
+        assert_eq!(scaled.dimensions(), (100, 100));
+        // nearest-neighbor: the first block is all red, its neighbor untouched
+        assert_eq!(scaled.get_pixel(24, 24).0, [255, 0, 0, 255]);
+        assert_eq!(scaled.get_pixel(25, 24).0, [0, 0, 0, 255]);
+
+        let large = DynamicImage::new_rgb8(640, 640);
+        assert!(matches!(scale_to(&picker, &large, area), Cow::Borrowed(_)));
+    }
 }
