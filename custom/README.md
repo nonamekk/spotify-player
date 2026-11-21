@@ -45,7 +45,7 @@ The build workflow runs only when started by hand; its schedule and push trigger
 
 1. The `checks` job runs `custom/ci/check.sh`; a failure stops the build.
 2. The `build` job cherry-picks this branch's own commits onto the requested release, the latest by default (`custom/ci/rebase.sh`). On a branch rebased onto that release they apply as they are.
-3. It builds `custom/ci/PKGBUILD` (Arch's `extra/spotify-player` without streaming, which a Soloist device does, with the `pixelate` feature and the listener added, built for Zen 5, `pkgrel=1.1`) in an `archlinux:base-devel` container (`custom/ci/build.sh`, `custom/ci/container-build.sh`).
+3. It builds `custom/ci/PKGBUILD` (Arch's `extra/spotify-player` without streaming, which a Soloist device does, with the `pixelate` feature and the listener added, built for Zen 5, `pkgrel=1.<run number>` so that every build is an upgrade for pacman, also a rebuild of the same release) in an `archlinux:base-devel` container (`custom/ci/build.sh`, `custom/ci/container-build.sh`).
 4. The `release` job (`custom/ci/publish.sh`) publishes the package as release `spotify-player-<version>-custom-znver5.<id>` (the CPU from the PKGBUILD's `_cpu`, also in its title), with the applied commits in its notes, and replaces the package and database in the `pacman-repo` release, which is the pacman repository.
 
 ## Played history

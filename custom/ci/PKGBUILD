@@ -1,5 +1,6 @@
 # Arch's spotify-player package (extra/spotify-player) built from this fork's source.
-# The workflow sets pkgver and puts the source next to this file as spotify-player.tar.gz.
+# The workflow sets pkgver, sets pkgrel to 1.<run number> and puts the source next to this file as
+# spotify-player.tar.gz.
 
 # The CPU the app is built for: the Ryzen 9600X this package is made for. The package then runs on
 # Zen 5 only, and the runner's CPU can't run it either, so nothing built for this CPU runs during the
