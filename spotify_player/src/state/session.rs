@@ -53,6 +53,10 @@ impl SavedPlayback {
         })
     }
 
+    pub fn uri(&self) -> &str {
+        &self.uri
+    }
+
     pub fn progress(&self) -> chrono::Duration {
         chrono::Duration::seconds(self.progress_secs)
     }

@@ -100,6 +100,185 @@ fn handle_event(
     Ok(())
 }
 
+/// How long a read waits during a silent start, so its deadlines are checked often
+const SILENT_READ_TIMEOUT: Duration = Duration::from_millis(50);
+/// How long a silent start waits for the first state and the mute
+const SILENT_SETUP_TIMEOUT: Duration = Duration::from_secs(2);
+/// How long a silent start waits for the playback to start and pause
+const SILENT_START_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long the volume stays down once paused, for volume changes Spotify sends late
+const SILENT_SETTLE: Duration = Duration::from_secs(1);
+
+/// What the Soloist on this machine holds, from its state
+pub struct Held {
+    pub playing: bool,
+    /// URI of its item, if it has one
+    pub uri: Option<String>,
+}
+
+/// What the Soloist on this machine holds; `None` when none runs here with its WebSocket API
+pub fn held() -> Option<Held> {
+    let mut socket = connect_quick().ok()?;
+    let state = read_until(&mut socket, SILENT_SETUP_TIMEOUT, |event| {
+        event["type"] == "playback_state"
+    })
+    .ok()??;
+    Some(Held {
+        playing: is_playing(&state),
+        uri: state["item"]["uri"].as_str().map(str::to_owned),
+    })
+}
+
+/// A playback being started on the Soloist on this machine without a sound. Spotify's Web API
+/// can only start a playback playing, and as it starts it puts the device's volume back up, so
+/// over Soloist's own API the volume is held at 0 and the playback paused the moment it plays.
+pub struct SilentStart {
+    done: flume::Receiver<anyhow::Result<()>>,
+}
+
+impl SilentStart {
+    /// Mute the Soloist on this machine and watch it: what plays next is paused at once and moved
+    /// to `position_ms`, then the volume goes back. `None` when no Soloist runs here, or it plays.
+    pub async fn begin(position_ms: i64) -> Option<Self> {
+        let (ready_tx, ready_rx) = flume::bounded(1);
+        let (done_tx, done) = flume::bounded(1);
+        std::thread::Builder::new()
+            .name("soloist-silent-start".into())
+            .spawn(move || {
+                let result = hold_silent(position_ms, &ready_tx);
+                if let Err(err) = &result {
+                    tracing::warn!("Soloist's silent start: {err:#}");
+                }
+                let _ = done_tx.send(result);
+            })
+            .ok()?;
+        // the sender is dropped without a value when the mute failed
+        ready_rx.recv_async().await.ok()?;
+        Some(Self { done })
+    }
+
+    /// Wait until the playback is paused at its position and the volume is back
+    pub async fn finish(self) -> anyhow::Result<()> {
+        self.done.recv_async().await?
+    }
+}
+
+/// The silent start: mute, signal `ready`, pause what plays, seek, put the volume back
+fn hold_silent(position_ms: i64, ready: &flume::Sender<()>) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+    use std::time::Instant;
+
+    let mut socket = connect_quick()?;
+    let state = read_until(&mut socket, SILENT_SETUP_TIMEOUT, |event| {
+        event["type"] == "playback_state"
+    })?
+    .context("no state from Soloist")?;
+    anyhow::ensure!(!is_playing(&state), "Soloist plays already");
+    let volume = state["volume"]
+        .as_u64()
+        .context("Soloist reports no volume")?;
+    send(
+        &mut socket,
+        &serde_json::json!({"command": "set_volume", "volume": 0}),
+    )?;
+    read_until(&mut socket, SILENT_SETUP_TIMEOUT, |event| {
+        event["type"] == "volume_changed" && event["volume"] == 0
+    })?
+    .context("Soloist didn't mute")?;
+    ready.send(())?;
+
+    let deadline = Instant::now() + SILENT_START_TIMEOUT;
+    let mut started = false;
+    // since when the playback is paused with the volume at 0
+    let mut quiet_since: Option<Instant> = None;
+    let result = loop {
+        if quiet_since.is_some_and(|since| since.elapsed() >= SILENT_SETTLE) {
+            break Ok(());
+        }
+        if Instant::now() > deadline {
+            break Err(anyhow::anyhow!(
+                "the playback didn't start and pause in time"
+            ));
+        }
+        let event = match socket.read() {
+            Ok(Message::Text(text)) => serde_json::from_str::<serde_json::Value>(&text)?,
+            Ok(_) => continue,
+            Err(err) if api::is_wait(&err) => continue,
+            Err(err) => break Err(err.into()),
+        };
+        let is_status = event["type"] == "playback_changed" || event["type"] == "playback_state";
+        if is_status && is_playing(&event) {
+            send(&mut socket, &serde_json::json!({"command": "pause"}))?;
+            started = true;
+            quiet_since = None;
+        } else if is_status && started && event["status"] == "paused" && quiet_since.is_none() {
+            send(
+                &mut socket,
+                &serde_json::json!({"command": "seek", "position_ms": position_ms}),
+            )?;
+            quiet_since = Some(Instant::now());
+        } else if event["type"] == "volume_changed" && event["volume"] != 0 {
+            send(
+                &mut socket,
+                &serde_json::json!({"command": "set_volume", "volume": 0}),
+            )?;
+            quiet_since = quiet_since.map(|_| Instant::now());
+        }
+    };
+    send(
+        &mut socket,
+        &serde_json::json!({"command": "set_volume", "volume": volume}),
+    )?;
+    let _ = socket.close(None);
+    result
+}
+
+/// A connection to the Soloist on this machine whose reads wait `SILENT_READ_TIMEOUT`
+fn connect_quick() -> anyhow::Result<api::Socket> {
+    let home = dirs_next::home_dir().ok_or_else(|| anyhow::anyhow!("no home folder"))?;
+    let socket = api::connect(&api::data_dir(&home))?;
+    socket
+        .get_ref()
+        .set_read_timeout(Some(SILENT_READ_TIMEOUT))?;
+    Ok(socket)
+}
+
+/// Send a command, given without its `"type"`
+fn send(socket: &mut api::Socket, command: &serde_json::Value) -> anyhow::Result<()> {
+    let mut command = command.clone();
+    command["type"] = "command".into();
+    socket.send(Message::text(command.to_string()))?;
+    Ok(())
+}
+
+/// The first event `wanted` accepts within `timeout`, or `None`
+fn read_until(
+    socket: &mut api::Socket,
+    timeout: Duration,
+    wanted: impl Fn(&serde_json::Value) -> bool,
+) -> anyhow::Result<Option<serde_json::Value>> {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        match socket.read() {
+            Ok(Message::Text(text)) => {
+                let event: serde_json::Value = serde_json::from_str(&text)?;
+                if wanted(&event) {
+                    return Ok(Some(event));
+                }
+            }
+            Ok(_) => {}
+            Err(err) if api::is_wait(&err) => {}
+            Err(err) => return Err(err.into()),
+        }
+    }
+    Ok(None)
+}
+
+/// Whether a state or status event says it plays; buffering is the start of playing
+fn is_playing(event: &serde_json::Value) -> bool {
+    event["status"] == "playing" || event["status"] == "buffering"
+}
+
 /// Name of the Spotify Connect device of a Soloist running on this machine: its `-n` argument
 pub fn local_device_name() -> Option<String> {
     std::fs::read_dir("/proc")

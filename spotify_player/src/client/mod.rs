@@ -571,14 +571,36 @@ impl AppClient {
                 config::get_config().app_config.tracks_playback_limit,
             )
             .context("no playback to restore")?;
-        let volume = self
+        let device = self
             .available_devices()
             .await?
             .into_iter()
-            .find(|d| d.id.as_deref() == Some(device_id))
-            .and_then(|d| d.volume_percent);
+            .find(|d| d.id.as_deref() == Some(device_id));
+
+        // the Soloist on this machine is kept silent over its own API
+        let is_local = device
+            .as_ref()
+            .is_some_and(|d| soloist::local_device_name().is_some_and(|name| name == d.name));
+        if is_local {
+            // Spotify can keep the playback without reporting it a second after the transfer
+            if let Some(held) = soloist::held() {
+                if held.playing || held.uri.as_deref() == Some(saved.uri()) {
+                    tracing::info!("Soloist kept the previous playback, nothing to restore");
+                    return Ok(());
+                }
+            }
+            if let Some(silent) =
+                soloist::SilentStart::begin(saved.progress().num_milliseconds()).await
+            {
+                self.start_playback(playback, Some(device_id)).await?;
+                silent.finish().await?;
+                tracing::info!("Restored the previous session's playback");
+                return Ok(());
+            }
+        }
 
         // Spotify can't start a playback paused, so it starts muted and is paused right away
+        let volume = device.and_then(|d| d.volume_percent);
         if volume.is_some() {
             self.volume(0, Some(device_id)).await?;
         }
