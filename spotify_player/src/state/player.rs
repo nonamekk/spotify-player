@@ -209,6 +209,13 @@ impl PlayerState {
         self.queue = Some(queue);
     }
 
+    /// The items Spotify plays after the current one, once its queue is known for that item
+    pub fn queue_after_current(&self) -> Option<&[rspotify::model::PlayableItem]> {
+        let queue = self.queue.as_ref()?;
+        let current = item_uri(self.currently_playing())?;
+        (item_uri(queue.currently_playing.as_ref()) == Some(current)).then_some(&queue.queue)
+    }
+
     pub fn currently_playing(&self) -> Option<&rspotify::model::PlayableItem> {
         self.playback.as_ref().and_then(|p| p.item.as_ref())
     }

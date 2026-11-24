@@ -670,7 +670,6 @@ impl AppClient {
                 self.retrieve_current_playback(state, true).await?;
             }
             ClientRequest::NewPlaybackShown => {
-                state.forget_stale_playing_tracks();
                 self.handle_new_playback_event(state).await?;
             }
             ClientRequest::GetDevices => {
@@ -840,6 +839,7 @@ impl AppClient {
                     let queued = player.queue.iter().flat_map(|queue| &queue.queue);
                     queued.take(COVER_AHEAD).cloned().collect()
                 };
+                state.forget_stale_playing_tracks();
                 self.preload_covers(state, &upcoming).await;
             }
             ClientRequest::ReorderPlaylistItems {
@@ -2097,7 +2097,6 @@ impl AppClient {
         if !new_playback {
             return Ok(());
         }
-        state.forget_stale_playing_tracks();
         self.handle_new_playback_event(state).await?;
 
         Ok(())

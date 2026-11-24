@@ -199,25 +199,34 @@ impl State {
         }
     }
 
-    /// Forget the playing Tracks context once Spotify plays something outside of it
+    /// Forget the playing Tracks context once Spotify plays something outside of it with none of
+    /// its tracks queued after: a track queued in between keeps it. Decided once Spotify's queue is
+    /// known for the playing track.
     pub fn forget_stale_playing_tracks(&self) {
-        let (id, uri) = {
+        let (id, uri, queued) = {
             let player = self.player.read();
             let item_uri = player
                 .currently_playing()
                 .and_then(rspotify::model::PlayableItem::id)
                 .map(|id| id.uri());
-            match (player.currently_playing_tracks_id.clone(), item_uri) {
-                (Some(id), Some(uri)) => (id, uri),
-                _ => return,
-            }
+            let (Some(id), Some(uri), Some(queue)) = (
+                player.currently_playing_tracks_id.clone(),
+                item_uri,
+                player.queue_after_current(),
+            ) else {
+                return;
+            };
+            (id, uri, queued_track_ids(queue))
         };
 
         let is_stale = self
             .data
             .read()
             .context_tracks(&ContextId::Tracks(id))
-            .is_some_and(|tracks| tracks.iter().all(|t| t.id.uri() != uri));
+            .is_some_and(|tracks| {
+                tracks.iter().all(|t| t.id.uri() != uri)
+                    && !tracks.iter().any(|t| queued.contains(&t.id))
+            });
         if is_stale {
             self.player.write().currently_playing_tracks_id = None;
         }
@@ -248,5 +257,137 @@ impl State {
     #[cfg(feature = "streaming")]
     pub fn is_local_streaming_active(&self) -> bool {
         self.vis_bands.as_ref().is_some_and(|b| b.lock().is_active)
+    }
+}
+
+/// The tracks among queued items
+fn queued_track_ids(
+    queue: &[rspotify::model::PlayableItem],
+) -> std::collections::HashSet<TrackId<'static>> {
+    queue
+        .iter()
+        .filter_map(|item| match item {
+            rspotify::model::PlayableItem::Track(track) => track.id.clone(),
+            _ => None,
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use rspotify::model::{CurrentUserQueue, PlayableItem, TrackId};
+    use serde_json::json;
+    use soloist_history::Record;
+
+    use super::{played_history::full_track, AppData, PlayerState, PlayingTracks, State, Track};
+    use crate::state::{TracksId, UIState};
+
+    fn id(name: &str) -> TrackId<'static> {
+        TrackId::from_id(name.repeat(22)).unwrap().into_static()
+    }
+
+    /// The track `name` as Spotify reports it
+    fn item(name: &str) -> PlayableItem {
+        let record = Record {
+            id: name.repeat(22),
+            name: name.to_owned(),
+            artists: vec![("R".repeat(22), "Artist".to_owned())],
+            album_id: "L".repeat(22),
+            album: "Album".to_owned(),
+            duration_ms: 200_000,
+            ..Record::default()
+        };
+        PlayableItem::Track(full_track(&record).unwrap())
+    }
+
+    /// The track `name` as a list has it
+    fn list_track(name: &str) -> Track {
+        Track {
+            id: id(name),
+            name: name.to_owned(),
+            artists: vec![],
+            album: None,
+            duration: std::time::Duration::from_secs(200),
+            explicit: false,
+            added_at: 0,
+        }
+    }
+
+    fn radio_id() -> TracksId {
+        TracksId::new(format!("radio:spotify:track:{}", "A".repeat(22)), "Radio")
+    }
+
+    /// The list `list` playing from the app, Spotify playing `playing` with `queued` after it
+    /// (`None`: Spotify's queue is still the one of the track before)
+    fn state(list: &[&str], playing: &str, queued: Option<&[&str]>) -> State {
+        let mut playback: rspotify::model::CurrentPlaybackContext = serde_json::from_value(json!({
+            "device": {"id": "box", "is_active": true, "is_private_session": false, "is_restricted": false,
+                       "name": "box-spot", "type": "Computer", "volume_percent": 50},
+            "repeat_state": "off", "shuffle_state": false, "context": null, "timestamp": 0,
+            "progress_ms": 0, "is_playing": true, "item": null,
+            "currently_playing_type": "track", "actions": {"disallows": {}},
+        }))
+        .unwrap();
+        playback.item = Some(item(playing));
+        let queue = CurrentUserQueue {
+            currently_playing: Some(item(if queued.is_some() { playing } else { "Z" })),
+            queue: queued
+                .unwrap_or_default()
+                .iter()
+                .map(|name| item(name))
+                .collect(),
+        };
+        let player = PlayerState {
+            playback: Some(playback),
+            playback_last_updated_time: Some(std::time::Instant::now()),
+            queue: Some(queue),
+            currently_playing_tracks_id: Some(radio_id()),
+            ..PlayerState::default()
+        };
+
+        let mut data = AppData::new(Path::new("/nonexistent"));
+        let tracks = list.iter().map(|name| list_track(name)).collect();
+        data.restore_playing_tracks(PlayingTracks {
+            id: radio_id(),
+            desc: "Radio".to_owned(),
+            tracks,
+        });
+
+        State {
+            ui: UIState::default().into(),
+            player: player.into(),
+            data: data.into(),
+            is_daemon: false,
+            #[cfg(feature = "streaming")]
+            vis_bands: None,
+            logs: std::sync::Arc::default(),
+        }
+    }
+
+    fn keeps_list(state: &State) -> bool {
+        state.player.read().currently_playing_tracks_id.is_some()
+    }
+
+    #[test]
+    fn a_track_queued_in_the_middle_of_the_list_keeps_it() {
+        let state = state(&["A", "B", "C"], "X", Some(&["B", "C"]));
+        state.forget_stale_playing_tracks();
+        assert!(keeps_list(&state));
+    }
+
+    #[test]
+    fn a_track_outside_the_list_with_none_of_it_queued_ends_it() {
+        let state = state(&["A", "B", "C"], "X", Some(&["Y"]));
+        state.forget_stale_playing_tracks();
+        assert!(!keeps_list(&state));
+    }
+
+    #[test]
+    fn the_list_stays_until_the_queue_of_the_playing_track_is_known() {
+        let state = state(&["A", "B", "C"], "X", None);
+        state.forget_stale_playing_tracks();
+        assert!(keeps_list(&state));
     }
 }
