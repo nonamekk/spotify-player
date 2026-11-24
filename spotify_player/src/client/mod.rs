@@ -7,11 +7,12 @@ use crate::{auth, config};
 use crate::{
     auth::AuthConfig,
     state::{
-        load_data_from_file_cache, played_history, radios, session, store_data_into_file_cache,
-        Album, AlbumId, Artist, ArtistId, Category, Context, ContextId, Device, FileCacheKey, Item,
-        ItemId, ListContinuation, MemoryCaches, PageState, Playback, PlaybackMetadata, Playlist,
-        PlaylistFolderItem, PlaylistId, SearchResults, SharedState, Show, ShowId, Track, TrackId,
-        UserId, TTL_CACHE_DURATION, USER_LIKED_TRACKS_ID, USER_LIKED_TRACKS_URI,
+        load_data_from_file_cache, other_devices, played_history, radios, session,
+        store_data_into_file_cache, Album, AlbumId, Artist, ArtistId, Category, Context, ContextId,
+        Device, FileCacheKey, Item, ItemId, ListContinuation, MemoryCaches, PageState, Playback,
+        PlaybackMetadata, Playlist, PlaylistFolderItem, PlaylistId, SearchResults, SharedState,
+        Show, ShowId, Track, TrackId, UserId, OTHER_DEVICES_URI, OTHER_DEVICE_LIST_URI,
+        TTL_CACHE_DURATION, USER_LIKED_TRACKS_ID, USER_LIKED_TRACKS_URI,
         USER_RECENTLY_PLAYED_TRACKS_URI, USER_TOP_TRACKS_URI,
     },
 };
@@ -763,8 +764,10 @@ impl AppClient {
                 let uri = context.uri();
                 // Liked tracks must always be refreshed to keep user_data.saved_tracks in sync,
                 // and the recently played tracks to show the latest of the played history.
-                let always_refresh =
-                    uri == USER_LIKED_TRACKS_URI || uri == USER_RECENTLY_PLAYED_TRACKS_URI;
+                let always_refresh = uri == USER_LIKED_TRACKS_URI
+                    || uri == USER_RECENTLY_PLAYED_TRACKS_URI
+                    || uri == OTHER_DEVICES_URI
+                    || uri == OTHER_DEVICE_LIST_URI;
                 let cache_miss =
                     !always_refresh && !state.data.read().caches.context.contains_key(&uri);
                 if cache_miss || always_refresh {
@@ -783,6 +786,8 @@ impl AppClient {
                                 tracks: self.current_user_recently_played_tracks().await?,
                                 desc: "User's recently played tracks".to_string(),
                             },
+                            OTHER_DEVICES_URI => self.other_devices_context(state).await?,
+                            OTHER_DEVICE_LIST_URI => self.other_device_list_context(state).await?,
                             USER_LIKED_TRACKS_URI => {
                                 let tracks = self.liked_tracks_for_page(state).await?;
                                 let tracks_hm = tracks
@@ -815,7 +820,13 @@ impl AppClient {
                         .write()
                         .caches
                         .context
-                        .insert(uri, ctx, *TTL_CACHE_DURATION);
+                        .insert(uri.clone(), ctx, *TTL_CACHE_DURATION);
+                    if uri == OTHER_DEVICE_LIST_URI {
+                        let at = state.data.read().other_device_list.at.clone();
+                        if let Some(at) = at {
+                            state.select_track(&at.uri());
+                        }
+                    }
                 }
             }
             ClientRequest::Search(query) => match self.search(&query).await {
@@ -853,6 +864,7 @@ impl AppClient {
             ClientRequest::DeleteFromLibrary(id) => {
                 self.delete_from_library(state, id).await?;
             }
+            ClientRequest::TakePlayback => self.take_playback(state).await?,
             ClientRequest::GetCurrentUserQueue => {
                 let queue = self.current_user_queue2().await?;
                 let upcoming: Vec<_> = {
@@ -1355,6 +1367,146 @@ impl AppClient {
             }
         }
         Ok(tracks)
+    }
+
+    /// What another device plays now and what the devices played, for the `g D` page
+    async fn other_devices_context(&self, state: &SharedState) -> Result<Context> {
+        let here = preferred_device();
+        let live = self
+            .current_playback2()
+            .await?
+            .filter(|p| here.as_ref() != Some(&p.device.name));
+        let history = self
+            .current_user_recently_played(Some(50), None)
+            .await?
+            .items;
+        let (tracks, desc, page) = other_devices::page(live, history);
+        state.data.write().other_devices = page;
+        Ok(Context::Tracks { tracks, desc })
+    }
+
+    /// The list being played, or played last, on any device, for the `g d` page: the whole list when
+    /// Spotify gives it to this app, else the tracks played from it, the track it's at and
+    /// Spotify's queue while it plays
+    async fn other_device_list_context(&self, state: &SharedState) -> Result<Context> {
+        let live = self.current_playback2().await?;
+        let is_live = live.as_ref().is_some_and(|p| p.context.is_some());
+        let history = self
+            .current_user_recently_played(Some(50), None)
+            .await?
+            .items;
+        let here = preferred_device();
+        let Some(source) = other_devices::list_source(live, history, here.as_deref()) else {
+            state.data.write().other_device_list = other_devices::OtherDeviceList::default();
+            return Ok(Context::Tracks {
+                tracks: Vec::new(),
+                desc: "No list plays or played lately".to_string(),
+            });
+        };
+
+        // Spotify doesn't give this app the playlists it makes (mixes, radios): 404
+        let (name, tracks) = match source.context.clone() {
+            Some(ContextId::Tracks(_)) => (
+                Some("Liked Songs".to_string()),
+                self.liked_tracks_for_page(state).await.ok(),
+            ),
+            Some(ContextId::Playlist(id)) => match self.playlist_context(id).await {
+                Ok(Context::Playlist { playlist, tracks }) => (Some(playlist.name), Some(tracks)),
+                _ => (None, None),
+            },
+            Some(ContextId::Album(id)) => match self.album_context(id).await {
+                Ok(Context::Album { album, tracks }) => (Some(album.name), Some(tracks)),
+                _ => (None, None),
+            },
+            Some(ContextId::Artist(id)) => match self.artist_context(id).await {
+                Ok(Context::Artist {
+                    artist, top_tracks, ..
+                }) => (Some(artist.name), Some(top_tracks)),
+                _ => (None, None),
+            },
+            _ => (None, None),
+        };
+        let tracks = match tracks {
+            Some(tracks) if tracks.iter().any(|t| t.id == source.at.id) => tracks,
+            _ => {
+                let upcoming = if is_live {
+                    self.current_user_queue2()
+                        .await?
+                        .queue
+                        .into_iter()
+                        .filter_map(|item| match item {
+                            rspotify::model::PlayableItem::Track(track) => Some(track),
+                            _ => None,
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                source.rebuilt(upcoming)
+            }
+        };
+
+        let mut desc = match &source.device {
+            Some((device, true)) => format!("Playing on {device}"),
+            Some((device, false)) => format!("Paused on {device}"),
+            None => "Played last".to_string(),
+        };
+        if let Some(name) = name {
+            desc = format!("{desc}: {name}");
+        }
+        state.data.write().other_device_list = source.page();
+        Ok(Context::Tracks { tracks, desc })
+    }
+
+    /// Fetch the `g D` or `g d` page again while it's shown, once Spotify has counted the track
+    /// that just ended (it adds a play as the next track starts)
+    fn refresh_device_pages_later(&self, state: &SharedState) {
+        let shown = match state.ui.lock().current_page() {
+            PageState::Context {
+                id: Some(ContextId::Tracks(id)),
+                ..
+            } if id.uri == OTHER_DEVICES_URI || id.uri == OTHER_DEVICE_LIST_URI => id.uri.clone(),
+            _ => return,
+        };
+        let (client, state) = (self.clone(), state.clone());
+        tokio::spawn(async move {
+            tokio::time::sleep(DEVICE_PAGES_REFRESH_DELAY).await;
+            let context = if shown == OTHER_DEVICES_URI {
+                client.other_devices_context(&state).await
+            } else {
+                client.other_device_list_context(&state).await
+            };
+            match context {
+                Ok(context) => {
+                    state
+                        .data
+                        .write()
+                        .caches
+                        .context
+                        .insert(shown, context, *TTL_CACHE_DURATION);
+                }
+                Err(err) => tracing::warn!("Failed to refresh {shown}: {err:#}"),
+            }
+        });
+    }
+
+    /// Move the playback of another device to this machine's device, playing, with its
+    /// position, queue and context: the `g d` page's first track
+    async fn take_playback(&self, state: &SharedState) -> Result<()> {
+        let name = preferred_device()
+            .context("no device of this machine to continue on; set `preferred_device`")?;
+        let device_id = self
+            .available_devices()
+            .await?
+            .into_iter()
+            .find(|d| d.name == name)
+            .and_then(|d| d.id)
+            .with_context(|| format!("{name} is not available"))?;
+        self.transfer_playback(&device_id, Some(true)).await?;
+        tracing::info!("Continued another device's playback on {name}");
+        state.data.write().other_devices.live = None;
+        self.update_playback_non_blocking(state);
+        Ok(())
     }
 
     /// Get the top tracks of the current user
@@ -2318,6 +2470,7 @@ impl AppClient {
 
     // Handle new track event
     async fn handle_new_playback_event(&self, state: &SharedState) -> Result<()> {
+        self.refresh_device_pages_later(state);
         #[cfg_attr(not(feature = "notify"), allow(unused_variables))]
         let configs = config::get_config();
 
@@ -2581,6 +2734,9 @@ const COVER_BATCH: usize = 3;
 /// Tries at continuing the playing list for a track, and the wait before trying again
 const CONTINUE_ATTEMPTS: usize = 2;
 const CONTINUE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(30);
+/// How long after a new track the `g D` and `g d` pages are fetched again, so Spotify has
+/// counted the track before it
+const DEVICE_PAGES_REFRESH_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// The playback and queue shown before a player request showed the track it plays
 type ShownBefore = (

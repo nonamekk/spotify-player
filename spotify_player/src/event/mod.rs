@@ -15,7 +15,8 @@ use crate::{
         LibraryPageUIState, PageState, PageType, PlayableId, Playback, PlaylistCreateCurrentField,
         PlaylistFolderItem, PlaylistId, PlaylistPopupAction, PopupState, SearchFocusState,
         SearchPageUIState, SharedState, ShowId, Track, TrackId, TrackOrder, TracksId, UIStateGuard,
-        USER_LIKED_TRACKS_ID, USER_RECENTLY_PLAYED_TRACKS_ID, USER_TOP_TRACKS_ID,
+        OTHER_DEVICES_ID, OTHER_DEVICE_LIST_ID, USER_LIKED_TRACKS_ID,
+        USER_RECENTLY_PLAYED_TRACKS_ID, USER_TOP_TRACKS_ID,
     },
     ui::{single_line_input::LineInput, Orientation},
     utils::parse_uri,
@@ -720,6 +721,27 @@ fn handle_global_command(
             client_pub.send(ClientRequest::GetContext(ContextId::Tracks(
                 USER_RECENTLY_PLAYED_TRACKS_ID.to_owned(),
             )))?;
+        }
+        Command::OtherDevicesPage => {
+            ui.new_page(PageState::Context {
+                id: None,
+                context_page_type: ContextPageType::Browsing(ContextId::Tracks(
+                    OTHER_DEVICES_ID.to_owned(),
+                )),
+                state: None,
+            });
+            client_pub.send(ClientRequest::GetContext(ContextId::Tracks(
+                OTHER_DEVICES_ID.to_owned(),
+            )))?;
+        }
+        Command::OtherDeviceListPage => {
+            let id = ContextId::Tracks(OTHER_DEVICE_LIST_ID.to_owned());
+            ui.new_page(PageState::Context {
+                id: Some(id.clone()),
+                context_page_type: ContextPageType::Browsing(id.clone()),
+                state: Some(ContextPageUIState::new_tracks()),
+            });
+            client_pub.send(ClientRequest::GetContext(id))?;
         }
         Command::LikedTrackPage => {
             ui.new_page(PageState::Context {

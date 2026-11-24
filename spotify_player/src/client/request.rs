@@ -32,6 +32,8 @@ pub enum ClientRequest {
     GetUserFollowedArtists,
     GetContext(ContextId),
     GetCurrentPlayback,
+    /// Move another device's playback to this machine's device, playing
+    TakePlayback,
     /// Load the cover and details of a track shown before Spotify reported it
     NewPlaybackShown,
     Search(String),

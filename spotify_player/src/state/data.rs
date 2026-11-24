@@ -40,6 +40,10 @@ pub struct AppData {
     pub user_data: UserData,
     pub caches: MemoryCaches,
     pub browse: BrowseData,
+    /// The `g D` page beyond its tracks
+    pub other_devices: super::other_devices::OtherDevices,
+    /// The `g d` page beyond its tracks
+    pub other_device_list: super::other_devices::OtherDeviceList,
 }
 
 #[derive(Debug)]
@@ -143,6 +147,8 @@ impl AppData {
             user_data: UserData::new_from_file_caches(cache_folder),
             caches: MemoryCaches::new(),
             browse: BrowseData::default(),
+            other_devices: super::other_devices::OtherDevices::default(),
+            other_device_list: super::other_devices::OtherDeviceList::default(),
         }
     }
 

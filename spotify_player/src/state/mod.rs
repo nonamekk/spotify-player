@@ -1,6 +1,7 @@
 mod constant;
 mod data;
 mod model;
+pub mod other_devices;
 pub mod played_history;
 mod player;
 mod queue;
@@ -195,6 +196,11 @@ impl State {
         else {
             return;
         };
+        self.select_track(&uri);
+    }
+
+    /// Select the track `uri` on the current page, if it lists it
+    pub fn select_track(&self, uri: &str) {
         let mut ui = self.ui.lock();
         let PageState::Context {
             id: Some(context_id),

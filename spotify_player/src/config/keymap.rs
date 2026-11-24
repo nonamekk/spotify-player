@@ -173,6 +173,14 @@ impl Default for KeymapConfig {
                     command: Command::RecentlyPlayedTrackPage,
                 },
                 Keymap {
+                    key_sequence: "g d".into(),
+                    command: Command::OtherDeviceListPage,
+                },
+                Keymap {
+                    key_sequence: "g D".into(),
+                    command: Command::OtherDevicesPage,
+                },
+                Keymap {
                     key_sequence: "g y".into(),
                     command: Command::LikedTrackPage,
                 },

@@ -5,7 +5,10 @@ use crate::{
         construct_album_actions, construct_artist_actions, construct_playlist_actions,
         construct_show_actions,
     },
-    state::{Episode, MutableWindowState, Show, UIStateGuard},
+    state::{
+        other_devices::ListChoice, Episode, MutableWindowState, Show, UIStateGuard,
+        OTHER_DEVICES_URI, OTHER_DEVICE_LIST_URI,
+    },
 };
 use command::Action;
 use rand::RngExt;
@@ -331,6 +334,38 @@ fn handle_command_for_track_table_window(
         filtered_tracks.len(),
         count,
     ) {
+        return Ok(true);
+    }
+
+    // `g d`: the live track moves its device's playback here, the others play the list from there
+    if command == Command::ChooseSelected
+        && matches!(context_id, Some(ContextId::Tracks(ref id)) if id.uri == OTHER_DEVICE_LIST_URI)
+    {
+        let limit = config::get_config().app_config.tracks_playback_limit;
+        client_pub.send(
+            match data.other_device_list.choose(selected_track, tracks, limit) {
+                ListChoice::Take => {
+                    state.player.write().currently_playing_tracks_id = None;
+                    ClientRequest::TakePlayback
+                }
+                ListChoice::Play(playback, tracks_id) => {
+                    state.player.write().currently_playing_tracks_id = tracks_id;
+                    ClientRequest::Player(PlayerRequest::StartPlayback(playback, None))
+                }
+            },
+        )?;
+        return Ok(true);
+    }
+
+    // `g D`: the live track moves its device's playback here, the others continue their context
+    if command == Command::ChooseSelected
+        && matches!(context_id, Some(ContextId::Tracks(ref id)) if id.uri == OTHER_DEVICES_URI)
+    {
+        state.player.write().currently_playing_tracks_id = None;
+        client_pub.send(match data.other_devices.playback(selected_track) {
+            Some(playback) => ClientRequest::Player(PlayerRequest::StartPlayback(playback, None)),
+            None => ClientRequest::TakePlayback,
+        })?;
         return Ok(true);
     }
 
