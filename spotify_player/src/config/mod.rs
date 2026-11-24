@@ -158,6 +158,9 @@ pub struct AppConfig {
     /// Move playback to `preferred_device` before running a playback command from this app.
     pub take_over_playback: bool,
 
+    /// Keep a list of tracks playing past the `tracks_playback_limit` tracks Spotify is given.
+    pub continue_track_lists: bool,
+
     /// Seconds after startup before the liked tracks are first refreshed in the background.
     pub liked_refresh_delay_secs: u64,
 
@@ -434,6 +437,7 @@ impl Default for AppConfig {
 
             preferred_device: None,
             take_over_playback: true,
+            continue_track_lists: true,
             liked_refresh_delay_secs: 6,
             liked_refresh_interval_mins: 10,
             played_history_size: 1500,

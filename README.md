@@ -269,6 +269,10 @@ The app reopens on the pages that were open when it was closed, with the same se
 
 On startup the app requests only the playback and the data of the page it reopens on. The library and the liked tracks show what's cached until the library or the liked tracks are opened, and the liked tracks then only request those liked since. Tracks unliked in another app are found in the background with a few requests, a few seconds apart, while the cached list shows. The liked tracks are also refreshed in the background a few seconds after startup and then every 10 minutes while nothing plays (`liked_refresh_delay_secs` and `liked_refresh_interval_mins` in `app.toml`), so tracks liked or unliked in another app show their liked mark; a refresh without changes is a single request.
 
+### Lists of tracks
+
+A list of tracks the app plays without Spotify knowing its context, such as the liked tracks or a radio, reaches Spotify as at most `tracks_playback_limit` tracks around the one started. With `continue_track_lists` (on by default), once Spotify has none of the list left after the playing track, the app adds the list's next track to Spotify's queue while that track plays, one track at a time, so the list plays to its end. Tracks queued by hand play first. With shuffle on, any other track of the list follows; with repeat on, Spotify repeats the tracks it has.
+
 ### Played history
 
 With [`soloist-history`](custom/README.md#played-history) running for a Spotify Soloist device, `PlayedHistory.msgpack` in the cache folder holds the last `played_history_size` tracks that device played, with how long each one played. The recently played tracks page (`g r`) then lists those, newest first, leaving out those played for less than `played_history_min_played_secs`, instead of Spotify's recently played tracks of every device. **Previous** shows the track before the current one right away when that device has played it, instead of when Spotify reports it.

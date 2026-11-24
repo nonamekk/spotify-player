@@ -9,9 +9,9 @@ use crate::{
     state::{
         load_data_from_file_cache, played_history, radios, store_data_into_file_cache, Album,
         AlbumId, Artist, ArtistId, Category, Context, ContextId, Device, FileCacheKey, Item,
-        ItemId, MemoryCaches, PageState, Playback, PlaybackMetadata, Playlist, PlaylistFolderItem,
-        PlaylistId, SearchResults, SharedState, Show, ShowId, Track, TrackId, UserId,
-        TTL_CACHE_DURATION, USER_LIKED_TRACKS_ID, USER_LIKED_TRACKS_URI,
+        ItemId, ListContinuation, MemoryCaches, PageState, Playback, PlaybackMetadata, Playlist,
+        PlaylistFolderItem, PlaylistId, SearchResults, SharedState, Show, ShowId, Track, TrackId,
+        UserId, TTL_CACHE_DURATION, USER_LIKED_TRACKS_ID, USER_LIKED_TRACKS_URI,
         USER_RECENTLY_PLAYED_TRACKS_URI, USER_TOP_TRACKS_URI,
     },
 };
@@ -840,6 +840,10 @@ impl AppClient {
                     queued.take(COVER_AHEAD).cloned().collect()
                 };
                 state.forget_stale_playing_tracks();
+                tokio::spawn({
+                    let (client, state) = (self.clone(), state.clone());
+                    async move { client.continue_playing_list(&state).await }
+                });
                 self.preload_covers(state, &upcoming).await;
             }
             ClientRequest::ReorderPlaylistItems {
@@ -890,6 +894,50 @@ impl AppClient {
             timer.elapsed().as_millis()
         );
 
+        Ok(())
+    }
+
+    /// Keep the playing list going past the tracks Spotify has of it (`continue_track_lists`)
+    async fn continue_playing_list(&self, state: &SharedState) {
+        if !config::get_config().app_config.continue_track_lists {
+            return;
+        }
+        for attempt in 0..CONTINUE_ATTEMPTS {
+            if attempt > 0 {
+                tokio::time::sleep(CONTINUE_RETRY_DELAY).await;
+            }
+            match self.queue_list_continuation(state).await {
+                Ok(()) => return,
+                Err(err) => {
+                    state.release_list_continuation();
+                    tracing::warn!("Failed to continue the playing list: {err:#}");
+                }
+            }
+        }
+    }
+
+    /// Add the list's next track to Spotify's queue when Spotify has none left, one track at a time
+    async fn queue_list_continuation(&self, state: &SharedState) -> Result<()> {
+        let track = match state.continue_playing_list() {
+            Some(ListContinuation::Queue(track)) => track,
+            Some(ListContinuation::End(last)) => {
+                tracing::info!("The playing list ends with {}", last.name);
+                return Ok(());
+            }
+            None => return Ok(()),
+        };
+        self.add_item_to_queue(PlayableId::Track(track.id.clone()), None)
+            .await
+            .with_context(|| format!("queue {}", track.name))?;
+        tracing::info!("Queued {} to continue the playing list", track.name);
+
+        let records = played_history::records(&config::get_config().cache_folder);
+        if let Some(item) = played_history::track_to_show(&records, &track.id, Some(&track)) {
+            state
+                .player
+                .write()
+                .show_queued(rspotify::model::PlayableItem::Track(item));
+        }
         Ok(())
     }
 
@@ -2481,6 +2529,10 @@ const COVER_AHEAD: usize = 15;
 const COVER_BACK: usize = 10;
 /// Covers loaded at a time either way, the nearest tracks' first
 const COVER_BATCH: usize = 3;
+
+/// Tries at continuing the playing list for a track, and the wait before trying again
+const CONTINUE_ATTEMPTS: usize = 2;
+const CONTINUE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// The playback and queue shown before a player request showed the track it plays
 type ShownBefore = (

@@ -18,9 +18,23 @@ pub use player::*;
 pub use queue::*;
 pub use ui::*;
 
+use rand::RngExt as _;
+
 use crate::config;
 
 pub use parking_lot::{Mutex, RwLock};
+
+/// Items of its queue Spotify lists at most, so a full list may not be all of it
+const QUEUE_LISTED: usize = 20;
+
+/// What keeps the playing list going once Spotify has none of its tracks left to play
+#[derive(Debug)]
+pub enum ListContinuation {
+    /// Queue this track of the list
+    Queue(Track),
+    /// The list ends with the playing track
+    End(Track),
+}
 
 /// Application's shared state
 pub type SharedState = Arc<State>;
@@ -232,6 +246,65 @@ impl State {
         }
     }
 
+    /// The step that keeps the playing list going when Spotify's queue holds none of its tracks
+    /// after the playing one, which Spotify only has a window of (`tracks_playback_limit`). Taken
+    /// once per playing track; `None` while Spotify has more of the list, or can't tell.
+    pub fn continue_playing_list(&self) -> Option<ListContinuation> {
+        let (id, current, queued, shuffle) = {
+            let player = self.player.read();
+            let playback = player.current_playback()?;
+            // a list plays as a list of tracks, without a context; with repeat, Spotify repeats them
+            if playback.context.is_some()
+                || playback.repeat_state != rspotify::model::RepeatState::Off
+            {
+                return None;
+            }
+            let rspotify::model::PlayableItem::Track(track) = player.currently_playing()? else {
+                return None;
+            };
+            let current = track.id.clone()?;
+            let queue = player.queue_after_current()?;
+            if queue.len() >= QUEUE_LISTED || player.continued_after.as_ref() == Some(&current) {
+                return None;
+            }
+            let id = player.currently_playing_tracks_id.clone()?;
+            (id, current, queued_track_ids(queue), playback.shuffle_state)
+        };
+
+        let step = {
+            let data = self.data.read();
+            let tracks = data.context_tracks(&ContextId::Tracks(id))?;
+            let i = tracks.iter().position(|t| t.id == current)?;
+            if tracks.iter().any(|t| queued.contains(&t.id)) {
+                return None;
+            }
+            let next = if shuffle && tracks.len() > 1 {
+                // any other track of the list, as Spotify shuffles the whole of a context
+                let j = rand::rng().random_range(0..tracks.len() - 1);
+                Some(j + usize::from(j >= i))
+            } else {
+                Some(i + 1).filter(|&next| next < tracks.len())
+            };
+            match next {
+                Some(next) => ListContinuation::Queue(tracks[next].clone()),
+                None => ListContinuation::End(tracks[i].clone()),
+            }
+        };
+
+        // queue checks run side by side: only one of them takes the step
+        let mut player = self.player.write();
+        if player.continued_after.as_ref() == Some(&current) {
+            return None;
+        }
+        player.continued_after = Some(current);
+        Some(step)
+    }
+
+    /// Let the playing track's continuation be taken again, after it failed
+    pub fn release_list_continuation(&self) {
+        self.player.write().continued_after = None;
+    }
+
     #[cfg(feature = "streaming")]
     pub fn is_streaming_enabled(&self) -> bool {
         let configs = config::get_config();
@@ -281,7 +354,10 @@ mod tests {
     use serde_json::json;
     use soloist_history::Record;
 
-    use super::{played_history::full_track, AppData, PlayerState, PlayingTracks, State, Track};
+    use super::{
+        played_history::full_track, AppData, ListContinuation, PlayerState, PlayingTracks, State,
+        Track,
+    };
     use crate::state::{TracksId, UIState};
 
     fn id(name: &str) -> TrackId<'static> {
@@ -389,5 +465,89 @@ mod tests {
         let state = state(&["A", "B", "C"], "X", None);
         state.forget_stale_playing_tracks();
         assert!(keeps_list(&state));
+    }
+
+    fn queued_next(state: &State) -> Option<String> {
+        match state.continue_playing_list() {
+            Some(ListContinuation::Queue(track)) => Some(track.name),
+            Some(ListContinuation::End(last)) => Some(format!("end after {}", last.name)),
+            None => None,
+        }
+    }
+
+    #[test]
+    fn spotify_playing_on_in_the_list_needs_nothing() {
+        let state = state(&["A", "B", "C", "D"], "B", Some(&["C", "D"]));
+        assert_eq!(queued_next(&state), None);
+    }
+
+    #[test]
+    fn the_end_of_what_spotify_has_queues_the_next_list_track_once() {
+        let state = state(&["A", "B", "C", "D"], "B", Some(&[]));
+        assert_eq!(queued_next(&state).as_deref(), Some("C"));
+        // another queue check for the same track takes no step
+        assert_eq!(queued_next(&state), None);
+        // unless the first one failed
+        state.release_list_continuation();
+        assert_eq!(queued_next(&state).as_deref(), Some("C"));
+    }
+
+    #[test]
+    fn tracks_queued_by_hand_outside_the_list_still_get_the_list_queued_after() {
+        let state = state(&["A", "B", "C", "D"], "B", Some(&["X", "Y"]));
+        assert_eq!(queued_next(&state).as_deref(), Some("C"));
+    }
+
+    #[test]
+    fn the_last_track_of_the_list_ends_it() {
+        let state = state(&["A", "B", "C", "D"], "D", Some(&[]));
+        assert_eq!(queued_next(&state).as_deref(), Some("end after D"));
+    }
+
+    #[test]
+    fn nothing_is_queued_without_the_queue_of_the_playing_track() {
+        let state = state(&["A", "B", "C", "D"], "B", None);
+        assert_eq!(queued_next(&state), None);
+    }
+
+    #[test]
+    fn a_full_queue_listing_may_hide_the_list_after_it() {
+        let queued: Vec<&str> = ["X"; super::QUEUE_LISTED].into();
+        let state = state(&["A", "B", "C", "D"], "B", Some(&queued));
+        assert_eq!(queued_next(&state), None);
+    }
+
+    #[test]
+    fn a_shuffled_list_goes_on_with_another_of_its_tracks() {
+        let state = state(&["A", "B", "C", "D"], "D", Some(&[]));
+        state
+            .player
+            .write()
+            .playback
+            .as_mut()
+            .unwrap()
+            .shuffle_state = true;
+        let next = queued_next(&state).unwrap();
+        assert!(["A", "B", "C"].contains(&next.as_str()), "{next}");
+    }
+
+    #[test]
+    fn a_repeated_playback_is_left_to_spotify() {
+        let state = state(&["A", "B", "C", "D"], "B", Some(&[]));
+        state.player.write().playback.as_mut().unwrap().repeat_state =
+            rspotify::model::RepeatState::Context;
+        assert_eq!(queued_next(&state), None);
+    }
+
+    #[test]
+    fn a_list_track_playing_in_a_context_is_left_to_spotify() {
+        let state = state(&["A", "B", "C", "D"], "B", Some(&["X"]));
+        state.player.write().playback.as_mut().unwrap().context = Some(rspotify::model::Context {
+            uri: "spotify:playlist:37i9dQZF1DXcBWIGoYBM5M".to_owned(),
+            href: String::new(),
+            external_urls: std::collections::HashMap::new(),
+            _type: rspotify::model::Type::Playlist,
+        });
+        assert_eq!(queued_next(&state), None);
     }
 }

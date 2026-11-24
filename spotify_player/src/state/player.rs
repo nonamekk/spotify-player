@@ -45,6 +45,9 @@ pub struct PlayerState {
 
     /// A track a player request showed before the device plays it
     pub requested: Option<Requested>,
+
+    /// The playing track the playing list was last continued after (`State::continue_playing_list`)
+    pub continued_after: Option<rspotify::model::TrackId<'static>>,
 }
 
 impl PlayerState {
@@ -191,6 +194,19 @@ impl PlayerState {
             self.requested = None;
         }
         waiting
+    }
+
+    /// Show `item` queued last, as it was added to Spotify's queue
+    pub fn show_queued(&mut self, item: rspotify::model::PlayableItem) {
+        if let Some(queue) = self.queue.as_mut() {
+            if !queue
+                .queue
+                .iter()
+                .any(|queued| item_uri(Some(queued)) == item_uri(Some(&item)))
+            {
+                queue.queue.push(item);
+            }
+        }
     }
 
     /// Set the queue Spotify reports. Right after a track change Spotify may still list the playing
