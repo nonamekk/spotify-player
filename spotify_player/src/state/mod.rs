@@ -300,6 +300,17 @@ impl State {
         Some(step)
     }
 
+    /// Append the tracks of `more` the playing list `id` doesn't have yet. Returns the first one
+    /// appended.
+    pub fn extend_playing_list(&self, id: &TracksId, more: Vec<Track>) -> Option<Track> {
+        let mut data = self.data.write();
+        let tracks = data.context_tracks_mut(&ContextId::Tracks(id.clone()))?;
+        let mut known: std::collections::HashSet<_> = tracks.iter().map(|t| t.id.clone()).collect();
+        let start = tracks.len();
+        tracks.extend(more.into_iter().filter(|t| known.insert(t.id.clone())));
+        tracks.get(start).cloned()
+    }
+
     /// Let the playing track's continuation be taken again, after it failed
     pub fn release_list_continuation(&self) {
         self.player.write().continued_after = None;
@@ -549,5 +560,34 @@ mod tests {
             _type: rspotify::model::Type::Playlist,
         });
         assert_eq!(queued_next(&state), None);
+    }
+
+    #[test]
+    fn a_radio_grows_by_the_tracks_it_doesnt_have() {
+        let state = state(&["A", "B"], "B", Some(&[]));
+        let more = ["B", "C", "C", "D"]
+            .iter()
+            .map(|name| list_track(name))
+            .collect();
+        let first = state.extend_playing_list(&radio_id(), more);
+        assert_eq!(first.map(|t| t.name).as_deref(), Some("C"));
+        let names: Vec<_> = state
+            .data
+            .read()
+            .context_tracks(&crate::state::ContextId::Tracks(radio_id()))
+            .unwrap()
+            .iter()
+            .map(|t| t.name.clone())
+            .collect();
+        assert_eq!(names, ["A", "B", "C", "D"]);
+        // the step after the playing track is the first new one
+        assert_eq!(queued_next(&state).as_deref(), Some("C"));
+    }
+
+    #[test]
+    fn a_radio_with_nothing_new_doesnt_grow() {
+        let state = state(&["A", "B"], "B", Some(&[]));
+        let more = vec![list_track("A")];
+        assert!(state.extend_playing_list(&radio_id(), more).is_none());
     }
 }

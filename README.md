@@ -273,6 +273,8 @@ On startup the app requests only the playback and the data of the page it reopen
 
 A list of tracks the app plays without Spotify knowing its context, such as the liked tracks or a radio, reaches Spotify as at most `tracks_playback_limit` tracks around the one started. With `continue_track_lists` (on by default), once Spotify has none of the list left after the playing track, the app adds the list's next track to Spotify's queue while that track plays, one track at a time, so the list plays to its end. Tracks queued by hand play first. With shuffle on, any other track of the list follows; with repeat on, Spotify repeats the tracks it has.
 
+A radio doesn't end: at its last track the app fetches a radio of that track and appends the tracks the list doesn't have yet, and the radio's page lists them too.
+
 ### Played history
 
 With [`soloist-history`](custom/README.md#played-history) running for a Spotify Soloist device, `PlayedHistory.msgpack` in the cache folder holds the last `played_history_size` tracks that device played, with how long each one played. The recently played tracks page (`g r`) then lists those, newest first, leaving out those played for less than `played_history_min_played_secs`, instead of Spotify's recently played tracks of every device. **Previous** shows the track before the current one right away when that device has played it, instead of when Spotify reports it.

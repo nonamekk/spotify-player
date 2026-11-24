@@ -10,7 +10,7 @@ use super::{load_data_from_file_cache, store_data_into_file_cache, FileCacheKey,
 /// Radios whose lists are kept, the most recently fetched
 const KEPT: usize = 20;
 
-/// The list of the radio `uri`, as first fetched
+/// The list of the radio `uri`, as first fetched and then extended while it played
 pub fn load(cache_folder: &Path, uri: &str) -> Option<Vec<Track>> {
     let radios: Vec<(String, Vec<Track>)> =
         load_data_from_file_cache(FileCacheKey::Radios, cache_folder)?;

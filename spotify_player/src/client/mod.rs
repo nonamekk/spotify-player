@@ -7,8 +7,8 @@ use crate::{auth, config};
 use crate::{
     auth::AuthConfig,
     state::{
-        load_data_from_file_cache, played_history, radios, store_data_into_file_cache, Album,
-        AlbumId, Artist, ArtistId, Category, Context, ContextId, Device, FileCacheKey, Item,
+        load_data_from_file_cache, played_history, radios, session, store_data_into_file_cache,
+        Album, AlbumId, Artist, ArtistId, Category, Context, ContextId, Device, FileCacheKey, Item,
         ItemId, ListContinuation, MemoryCaches, PageState, Playback, PlaybackMetadata, Playlist,
         PlaylistFolderItem, PlaylistId, SearchResults, SharedState, Show, ShowId, Track, TrackId,
         UserId, TTL_CACHE_DURATION, USER_LIKED_TRACKS_ID, USER_LIKED_TRACKS_URI,
@@ -921,8 +921,11 @@ impl AppClient {
         let track = match state.continue_playing_list() {
             Some(ListContinuation::Queue(track)) => track,
             Some(ListContinuation::End(last)) => {
-                tracing::info!("The playing list ends with {}", last.name);
-                return Ok(());
+                let Some(track) = self.extend_playing_radio(state, &last).await? else {
+                    tracing::info!("The playing list ends with {}", last.name);
+                    return Ok(());
+                };
+                track
             }
             None => return Ok(()),
         };
@@ -939,6 +942,29 @@ impl AppClient {
                 .show_queued(rspotify::model::PlayableItem::Track(item));
         }
         Ok(())
+    }
+
+    /// Make the playing radio longer, by the tracks of a radio of its last track `last` it doesn't
+    /// have yet. Returns the first new track; `None` when the list isn't a radio or none is new.
+    async fn extend_playing_radio(
+        &self,
+        state: &SharedState,
+        last: &Track,
+    ) -> Result<Option<Track>> {
+        let id = state.player.read().currently_playing_tracks_id.clone();
+        let Some(id) = id.filter(|id| id.uri.starts_with("radio:")) else {
+            return Ok(None);
+        };
+        // a radio fetched anew: the one kept of that track holds the tracks played already
+        let more = self
+            .radio_tracks(last.id.uri())
+            .await
+            .context("fetch more radio tracks")?;
+        let first = state.extend_playing_list(&id, more);
+        if first.is_some() {
+            session::store_playing_tracks(state, Some(&id));
+        }
+        Ok(first)
     }
 
     /// Get lyrics of a given track, return None if no lyrics is available

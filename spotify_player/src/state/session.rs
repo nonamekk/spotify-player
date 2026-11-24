@@ -121,7 +121,7 @@ fn store_session(session: &Session) {
 }
 
 /// Store the Tracks context being played, kept in memory for as long as it plays
-fn store_playing_tracks(state: &SharedState, id: Option<&TracksId>) {
+pub fn store_playing_tracks(state: &SharedState, id: Option<&TracksId>) {
     let playing = id.and_then(|id| {
         let mut data = state.data.write();
         data.caches.keep_playing_context(&id.uri);
