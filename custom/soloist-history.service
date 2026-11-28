@@ -5,8 +5,9 @@ Documentation=https://github.com/nonamekk/spotify-player/tree/spotify-player-cus
 After=soloist.service
 
 [Service]
-# Stopping it writes the track playing at that moment
-ExecStart=/usr/lib/spotify-player/soloist-history
+# Stopping it writes the track playing at that moment. After the system slept for a minute or
+# more it restarts Soloist's unit (if it runs), whose connection to Spotify comes back half working
+ExecStart=/usr/lib/spotify-player/soloist-history --restart-after-resume soloist.service
 # The connection ends whenever Soloist restarts; connect to the new one
 Restart=always
 RestartSec=5

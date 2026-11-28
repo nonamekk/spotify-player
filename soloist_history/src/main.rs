@@ -5,9 +5,13 @@
 //! A track is written when another one starts, or when the listener ends: Soloist closed the
 //! connection (it restarted; the service starts the listener again), or the service stopped
 //! (SIGTERM). Either way the track playing at that moment counts until then.
+//!
+//! With `--restart-after-resume <unit>`, it restarts Soloist's user unit after the system slept
+//! for a minute or more, since Soloist's connection to Spotify doesn't come back from it whole.
 
 mod follower;
 mod mpris;
+mod resume;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -41,6 +45,7 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<()> {
+    let restart_unit = restart_unit(std::env::args().skip(1))?;
     let home = PathBuf::from(std::env::var_os("HOME").context("HOME isn't set")?);
     let cache = home.join(".cache/spotify-player");
     std::fs::create_dir_all(&cache).with_context(|| format!("create {}", cache.display()))?;
@@ -62,7 +67,26 @@ fn run() -> Result<()> {
     let mut mpris = mpris::Mpris::new(data_dir)
         .inspect_err(|err| tracing::warn!("No MPRIS player for Soloist: {err:#}"))
         .ok();
+    // the history doesn't need the restart either: without the clock, it goes on without it
+    let mut sleep_watch = restart_unit.as_ref().and_then(|_| {
+        resume::SleepWatch::new()
+            .inspect_err(|err| tracing::warn!("Soloist won't be restarted after a sleep: {err:#}"))
+            .ok()
+    });
     while !stop.load(Ordering::Relaxed) {
+        // reads time out every second, so this runs within a second of a resume
+        if let (Some(watch), Some(unit)) = (sleep_watch.as_mut(), restart_unit.as_deref()) {
+            if let Some(slept) = watch.check().unwrap_or_default() {
+                tracing::info!(
+                    "The system slept for {} s: restarting {unit}",
+                    slept.as_secs()
+                );
+                // Soloist closes the connection as it restarts, which ends this loop
+                if let Err(err) = resume::restart(unit) {
+                    tracing::warn!("Failed to restart Soloist after the sleep: {err:#}");
+                }
+            }
+        }
         match socket.read() {
             Ok(Message::Text(text)) => {
                 let Ok(event) = serde_json::from_str(&text) else {
@@ -125,6 +149,19 @@ impl History {
     }
 }
 
+/// The unit given with `--restart-after-resume`, the only argument
+fn restart_unit(mut args: impl Iterator<Item = String>) -> Result<Option<String>> {
+    let mut unit = None;
+    while let Some(arg) = args.next() {
+        anyhow::ensure!(
+            arg == "--restart-after-resume",
+            "unknown argument {arg}; usage: soloist-history [--restart-after-resume <unit>]"
+        );
+        unit = Some(args.next().context("--restart-after-resume needs a unit")?);
+    }
+    Ok(unit)
+}
+
 /// `played_history_size` of `spotify_player`'s app.toml
 fn history_size(app_config: &Path) -> usize {
     std::fs::read_to_string(app_config)
@@ -143,7 +180,7 @@ fn now_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::History;
+    use super::{restart_unit, History};
     use soloist_history::{parse, Record};
 
     fn record(i: u64) -> Record {
@@ -151,6 +188,20 @@ mod tests {
             played_at: i,
             ..Record::default()
         }
+    }
+
+    #[test]
+    fn reads_the_unit_to_restart() {
+        let args = |list: &[&str]| list.iter().map(ToString::to_string).collect::<Vec<_>>();
+        assert_eq!(restart_unit(args(&[]).into_iter()).unwrap(), None);
+        assert_eq!(
+            restart_unit(args(&["--restart-after-resume", "soloist.service"]).into_iter())
+                .unwrap()
+                .as_deref(),
+            Some("soloist.service")
+        );
+        assert!(restart_unit(args(&["--restart-after-resume"]).into_iter()).is_err());
+        assert!(restart_unit(args(&["--other"]).into_iter()).is_err());
     }
 
     #[test]
