@@ -29,7 +29,7 @@ use crossterm::event::KeyCode;
 use clipboard::{execute_copy_command, get_clipboard_content};
 use ratatui::widgets::ListState;
 
-mod clipboard;
+pub(crate) mod clipboard;
 mod page;
 mod popup;
 mod window;
@@ -643,6 +643,13 @@ fn handle_global_command(
         }
         Command::OpenLogs => {
             ui.new_page(PageState::Logs { scroll_offset: 0 });
+        }
+        Command::LoginsPage => {
+            ui.new_page(PageState::Logins {
+                selected: 0,
+                pasted: LineInput::default(),
+            });
+            client_pub.send(ClientRequest::GetLogins)?;
         }
         Command::RefreshPlayback => {
             client_pub.send(ClientRequest::GetCurrentPlayback)?;

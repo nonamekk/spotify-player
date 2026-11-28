@@ -1,5 +1,6 @@
 mod constant;
 mod data;
+pub mod logins;
 mod model;
 pub mod other_devices;
 pub mod played_history;

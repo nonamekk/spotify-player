@@ -37,6 +37,14 @@ pub enum PageState {
     Logs {
         scroll_offset: usize,
     },
+    /// `g A`: the app's Spotify logins and the Soloist on this machine
+    Logins {
+        /// The selected login
+        selected: usize,
+        /// What's pasted while a sign-in waits
+        #[serde(skip)]
+        pasted: LineInput,
+    },
 }
 
 #[derive(PartialEq, Eq, Clone, Copy)]
@@ -49,6 +57,7 @@ pub enum PageType {
     Queue,
     CommandHelp,
     Logs,
+    Logins,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -155,6 +164,7 @@ impl PageState {
             PageState::Queue { .. } => PageType::Queue,
             PageState::CommandHelp { .. } => PageType::CommandHelp,
             PageState::Logs { .. } => PageType::Logs,
+            PageState::Logins { .. } => PageType::Logins,
         }
     }
 
@@ -244,7 +254,11 @@ impl PageState {
             Self::Lyrics { .. } => None,
             Self::CommandHelp { scroll_offset }
             | Self::Queue { scroll_offset }
-            | Self::Logs { scroll_offset } => Some(MutableWindowState::Scroll(scroll_offset)),
+            | Self::Logs { scroll_offset }
+            | Self::Logins {
+                selected: scroll_offset,
+                ..
+            } => Some(MutableWindowState::Scroll(scroll_offset)),
         }
     }
 }

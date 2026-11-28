@@ -1356,3 +1356,141 @@ pub fn render_logs_page(frame: &mut Frame, state: &SharedState, ui: &mut UIState
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, rect);
 }
+
+pub fn render_logins_page(
+    frame: &mut Frame,
+    state: &SharedState,
+    ui: &mut UIStateGuard,
+    rect: Rect,
+) {
+    use crate::state::logins::{SignIn, LOGIN_MONTHS};
+    use ratatui::text::Span;
+
+    let rect = construct_and_render_block("Logins", &ui.theme, Borders::ALL, frame, rect);
+    let data = state.data.read();
+    let logins = &data.logins;
+    let PageState::Logins { selected, pasted } = ui.current_page() else {
+        return;
+    };
+    let selected = *selected;
+    let now = chrono::Utc::now();
+    let day = |at: chrono::DateTime<chrono::Utc>| at.with_timezone(&chrono::Local).format("%F");
+
+    let mut lines = vec![
+        Line::from(format!(
+            "Spotify logins of spotify_player. Spotify ends each {LOGIN_MONTHS} months after it was authorized; refreshing doesn't extend it."
+        )),
+        Line::from(""),
+    ];
+    if logins.web_api.is_empty() {
+        lines.push(Line::from("Loading..."));
+    }
+    for (i, login) in logins.web_api.iter().enumerate() {
+        let short_id = login.client_id.get(..8).unwrap_or(&login.client_id);
+        let when = match (login.authorized_at, login.ends_at(), login.days_left(now)) {
+            (Some(at), Some(ends), Some(days)) if days >= 0 => {
+                format!(
+                    "authorized {}, ends {}: {days} days left",
+                    day(at),
+                    day(ends)
+                )
+            }
+            (Some(at), Some(ends), _) => {
+                format!("authorized {}, ended {}: sign in again", day(at), day(ends))
+            }
+            _ => "authorized: unknown".to_owned(),
+        };
+        let renew = if login.renewable {
+            ""
+        } else {
+            " (no refresh token: sign in again)"
+        };
+        let style = if i == selected {
+            ui.theme.selection(true)
+        } else {
+            Style::default()
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("{} ({short_id})", login.name), style),
+            Span::raw(format!("  {when}{renew}")),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    match &logins.soloist {
+        Some(soloist) => {
+            let build = soloist.build_expires.map_or_else(
+                || "its build date is unknown".to_owned(),
+                |date| {
+                    let days = (date - now.date_naive()).num_days();
+                    format!(
+                        "its build runs until {date} ({days} days), and soloist-update renews it"
+                    )
+                },
+            );
+            let login = if soloist.logged_in {
+                "logged in"
+            } else {
+                "not logged in (see journalctl --user -u soloist)"
+            };
+            lines.push(Line::from(format!(
+                "Soloist \"{}\": {login}; {build}.",
+                soloist.name
+            )));
+            lines.push(Line::from(
+                "Its pairing doesn't end. To pair it again: soloist-run --pair, then pick it in a Spotify app on the same network.",
+            ));
+        }
+        None => lines.push(Line::from("No Soloist runs on this machine.")),
+    }
+
+    lines.push(Line::from(""));
+    let name = |login: &usize| logins.web_api.get(*login).map_or("the login", |l| l.name);
+    match &logins.sign_in {
+        Some(SignIn::Waiting { login, url }) => {
+            lines.push(Line::from(format!(
+                "Signing in to {} again. Spotify's page opens in your browser; agree there, and the sign-in finishes by itself.",
+                name(login)
+            )));
+            lines.push(Line::from(
+                "If no browser opened, the address is on the clipboard (and below). If the browser ends on a page that doesn't load, copy its address (or the code in it), then press Enter here: Enter with nothing typed takes the clipboard. Esc gives up.",
+            ));
+            lines.push(Line::from(url.clone()));
+        }
+        Some(SignIn::Done { login }) => {
+            let ends = logins
+                .web_api
+                .get(*login)
+                .and_then(crate::state::logins::Login::ends_at)
+                .map(|ends| format!(": it ends {}", day(ends)))
+                .unwrap_or_default();
+            lines.push(Line::from(format!(
+                "Signed in to {} again{ends}.",
+                name(login)
+            )));
+        }
+        Some(SignIn::Failed { login, error }) => {
+            lines.push(Line::from(format!(
+                "Signing in to {} again failed: {error}. Enter tries again.",
+                name(login)
+            )));
+        }
+        None => lines.push(Line::from(
+            "Enter: sign in to the selected login again, in the browser.",
+        )),
+    }
+
+    let waiting = matches!(logins.sign_in, Some(SignIn::Waiting { .. }));
+    let chunks =
+        Layout::vertical([Constraint::Fill(0), Constraint::Length(u16::from(waiting))]).split(rect);
+    frame.render_widget(
+        Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false }),
+        chunks[0],
+    );
+    if waiting {
+        let input =
+            Layout::horizontal([Constraint::Length(8), Constraint::Fill(0)]).split(chunks[1]);
+        frame.render_widget(Paragraph::new("Pasted: "), input[0]);
+        frame.render_widget(pasted.widget(true), input[1]);
+    }
+}

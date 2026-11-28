@@ -170,6 +170,7 @@ fn render_main_layout(
         PageType::Queue => page::render_queue_page(frame, state, ui, rect),
         PageType::CommandHelp => page::render_commands_help_page(frame, ui, rect),
         PageType::Logs => page::render_logs_page(frame, state, ui, rect),
+        PageType::Logins => page::render_logins_page(frame, state, ui, rect),
     }
 }
 

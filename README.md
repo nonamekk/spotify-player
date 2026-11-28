@@ -269,6 +269,8 @@ The app reopens on the pages that were open when it was closed, with the same se
 
 `g d` shows the list playing now, or played last, on any device (a playlist, album, artist or the liked tracks), with its track selected: choosing that track while another device plays it moves its playback here, any other track plays the list here from that track. `g D` lists the tracks played on any device, newest first, as Spotify counts them (from 30 seconds of play), with another device's playing track first. Both pages update a few seconds after each new track.
 
+`g A` shows when the app's Spotify logins end: Spotify ends a login 6 months after it was authorized. Enter on one signs in again in the browser, without leaving the app. From 5 days before the end the app tells the desktop once a day, even with its other notifications off. It also shows the Soloist device's login and build.
+
 On startup the app requests only the playback and the data of the page it reopens on. The library and the liked tracks show what's cached until the library or the liked tracks are opened, and the liked tracks then only request those liked since. Tracks unliked in another app are found in the background with a few requests, a few seconds apart, while the cached list shows. The liked tracks are also refreshed in the background a few seconds after startup and then every 10 minutes while nothing plays (`liked_refresh_delay_secs` and `liked_refresh_interval_mins` in `app.toml`), so tracks liked or unliked in another app show their liked mark; a refresh without changes is a single request.
 
 ### Lists of tracks
@@ -511,6 +513,7 @@ List of supported commands:
 | `OpenCommandHelp`               | go to the command help page                                                                        | `?`, `C-h`         |
 | `PreviousPage`                  | go to the previous page                                                                            | `backspace`, `C-q` |
 | `OpenLogs`                      | go the the application logs page                                                                   | `g o`              |
+| `LoginsPage`                    | go to the app's Spotify logins: when they end, and signing in again                                | `g A`              |
 | `OpenSpotifyLinkFromClipboard`  | open a Spotify link from clipboard                                                                 | `O`                |
 | `SortTrackByTitle`              | sort the track table (if any) by track's title                                                     | `s t`              |
 | `SortTrackByArtists`            | sort the track table (if any) by track's artists                                                   | `s a`              |

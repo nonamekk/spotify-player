@@ -34,6 +34,13 @@ pub enum ClientRequest {
     GetCurrentPlayback,
     /// Move another device's playback to this machine's device, playing
     TakePlayback,
+    /// The app's Spotify logins and the Soloist on this machine, for the `g A` page
+    GetLogins,
+    /// Sign in to the `n`-th login again, in the browser
+    StartSignIn(usize),
+    /// Finish the sign-in with the pasted redirect address or code
+    FinishSignIn(Pasted),
+    CancelSignIn,
     /// Load the cover and details of a track shown before Spotify reported it
     NewPlaybackShown,
     Search(String),
@@ -63,4 +70,14 @@ pub enum ClientRequest {
         collab: bool,
         desc: String,
     },
+}
+
+/// Pasted text holding an auth code, kept out of the logs that show requests
+#[derive(Clone)]
+pub struct Pasted(pub String);
+
+impl std::fmt::Debug for Pasted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Pasted(..)")
+    }
 }

@@ -243,6 +243,13 @@ impl WebApiClient {
         self.fallback.as_mut()
     }
 
+    /// The configured client, then the fallback if there is one
+    pub(crate) fn clients(&self) -> Vec<&PkceWebApiClient> {
+        std::iter::once(&self.primary)
+            .chain(self.fallback.as_ref())
+            .collect()
+    }
+
     fn ncspot(&self) -> &PkceWebApiClient {
         self.fallback.as_ref().unwrap_or(&self.primary)
     }

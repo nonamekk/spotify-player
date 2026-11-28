@@ -340,6 +340,10 @@ impl Default for KeymapConfig {
                     key_sequence: "g o".into(),
                     command: Command::OpenLogs,
                 },
+                Keymap {
+                    key_sequence: "g A".into(),
+                    command: Command::LoginsPage,
+                },
             ],
         }
     }

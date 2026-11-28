@@ -206,6 +206,12 @@ async fn prompt_for_web_api_token(
         .request_token(&code)
         .await
         .with_context(|| format!("exchange auth code for token ({client_name})"))?;
+    // the login ends 6 months from now; the `g A` page shows when
+    crate::state::logins::record_authorized(
+        &config::get_config().cache_folder,
+        &client.get_creds().id,
+        chrono::Utc::now(),
+    );
 
     Ok(())
 }
@@ -248,38 +254,74 @@ fn listen_for_auth_code(addr: SocketAddr) -> Result<String> {
     tracing::info!("OAuth callback server listening on {addr}");
 
     for stream in listener.incoming() {
-        let mut stream = match stream {
+        let stream = match stream {
             Ok(stream) => stream,
             Err(err) => {
                 tracing::warn!("Failed to accept an OAuth callback connection: {err:#}");
                 continue;
             }
         };
-
-        let mut request_line = String::new();
-        if let Err(err) = BufReader::new(&stream).read_line(&mut request_line) {
-            tracing::warn!("Failed to read an OAuth callback request: {err:#}");
-            continue;
-        }
-
-        // The request line looks like `GET /login?code=...&state=... HTTP/1.1`.
-        let request_target = request_line.split_whitespace().nth(1).unwrap_or_default();
-        if let Some(code) = code_from_redirect(request_target) {
-            respond(
-                &mut stream,
-                "200 OK",
-                "Authentication successful! You can close this tab and go back to your terminal.",
-            );
+        if let Some(code) = answer_callback(stream) {
             return Ok(code);
         }
-
-        // Ignore stray requests (e.g. favicon / apple-touch-icon prefetches) that don't carry an
-        // auth code, and keep listening for the real redirect.
-        tracing::debug!("Ignoring OAuth callback request without an auth code: {request_target}");
-        respond(&mut stream, "404 Not Found", "");
     }
 
     anyhow::bail!("OAuth callback server stopped before receiving an auth code");
+}
+
+/// [`listen_for_auth_code`] that also returns `None` once `stop` is set, for a sign-in started in
+/// the app, which a pasted redirect can finish instead
+pub(crate) fn listen_for_auth_code_until(
+    addr: SocketAddr,
+    stop: &std::sync::atomic::AtomicBool,
+) -> Result<Option<String>> {
+    use std::sync::atomic::Ordering;
+
+    let listener =
+        TcpListener::bind(addr).with_context(|| format!("bind OAuth callback server to {addr}"))?;
+    listener.set_nonblocking(true)?;
+    tracing::info!("OAuth callback server listening on {addr}");
+    while !stop.load(Ordering::Relaxed) {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                stream.set_nonblocking(false)?;
+                if let Some(code) = answer_callback(stream) {
+                    return Ok(Some(code));
+                }
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(err) => tracing::warn!("Failed to accept an OAuth callback connection: {err:#}"),
+        }
+    }
+    Ok(None)
+}
+
+/// Answer one request to the OAuth callback server: its auth `code`, if it carries one
+fn answer_callback(mut stream: TcpStream) -> Option<String> {
+    let mut request_line = String::new();
+    if let Err(err) = BufReader::new(&stream).read_line(&mut request_line) {
+        tracing::warn!("Failed to read an OAuth callback request: {err:#}");
+        return None;
+    }
+
+    // The request line looks like `GET /login?code=...&state=... HTTP/1.1`.
+    let request_target = request_line.split_whitespace().nth(1).unwrap_or_default();
+    if let Some(code) = code_from_redirect(request_target) {
+        respond(
+            &mut stream,
+            "200 OK",
+            "Authentication successful! You can close this tab and go back to your terminal.",
+        );
+        return Some(code);
+    }
+
+    // Ignore stray requests (e.g. favicon / apple-touch-icon prefetches) that don't carry an
+    // auth code, and keep listening for the real redirect.
+    tracing::debug!("Ignoring OAuth callback request without an auth code: {request_target}");
+    respond(&mut stream, "404 Not Found", "");
+    None
 }
 
 /// Prompt for the redirect URL on stdin and extract the auth `code`.
@@ -304,7 +346,7 @@ fn respond(stream: &mut TcpStream, status: &str, body: &str) {
 
 /// Extract the `code` query parameter from a redirect, accepting either a full URL or a bare
 /// request target (e.g. `/login?code=...`).
-fn code_from_redirect(redirect: &str) -> Option<String> {
+pub(crate) fn code_from_redirect(redirect: &str) -> Option<String> {
     let url = Url::parse(redirect)
         .or_else(|_| Url::parse(&format!("http://localhost{redirect}")))
         .ok()?;
@@ -314,7 +356,7 @@ fn code_from_redirect(redirect: &str) -> Option<String> {
 }
 
 /// Resolve the loopback socket address that an `http://host:port/...` redirect URI listens on.
-fn redirect_socket_address(redirect_uri: &str) -> Option<SocketAddr> {
+pub(crate) fn redirect_socket_address(redirect_uri: &str) -> Option<SocketAddr> {
     let url = match Url::parse(redirect_uri) {
         Ok(url) if url.scheme() == "http" && url.port().is_some() => url,
         _ => return None,

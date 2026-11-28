@@ -25,6 +25,8 @@ pub enum FileCacheKey {
     LikedTracks,
     CurrentUser,
     Radios,
+    /// When the app's Spotify logins were authorized (`g A`)
+    Logins,
 }
 
 /// default time-to-live cache duration
@@ -44,6 +46,8 @@ pub struct AppData {
     pub other_devices: super::other_devices::OtherDevices,
     /// The `g d` page beyond its tracks
     pub other_device_list: super::other_devices::OtherDeviceList,
+    /// The `g A` page
+    pub logins: super::logins::Logins,
 }
 
 #[derive(Debug)]
@@ -149,6 +153,7 @@ impl AppData {
             browse: BrowseData::default(),
             other_devices: super::other_devices::OtherDevices::default(),
             other_device_list: super::other_devices::OtherDeviceList::default(),
+            logins: super::logins::Logins::default(),
         }
     }
 

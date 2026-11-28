@@ -16,6 +16,10 @@ pub fn handle_key_sequence_for_page(
     if page_type == PageType::Search {
         return handle_key_sequence_for_search_page(key_sequence, client_pub, state, ui);
     }
+    // so is the logins page, while a sign-in waits for a pasted redirect
+    if page_type == PageType::Logins {
+        return handle_key_sequence_for_logins_page(key_sequence, client_pub, state, ui);
+    }
 
     match config::get_config()
         .keymap_config
@@ -31,6 +35,7 @@ pub fn handle_key_sequence_for_page(
             PageType::Queue => Ok(handle_command_for_queue_page(command, ui)),
             PageType::CommandHelp => Ok(handle_command_for_command_help_page(command, ui)),
             PageType::Logs => Ok(handle_command_for_logs_page(command, ui)),
+            PageType::Logins => anyhow::bail!("page logins type should already be handled!"),
         },
         Some(CommandOrAction::Action(action, ActionTarget::SelectedItem)) => match page_type {
             PageType::Search => anyhow::bail!("page search type should already be handled!"),
@@ -578,6 +583,68 @@ fn handle_command_for_command_help_page(command: Command, ui: &mut UIStateGuard)
     }
     let count = ui.count_prefix;
     handle_navigation_command(command, ui.current_page_mut(), scroll_offset, 10000, count)
+}
+
+/// Enter signs in to the selected login again; while that sign-in waits, keys go to the field
+/// for the pasted redirect: Enter sends it, Esc gives up
+fn handle_key_sequence_for_logins_page(
+    key_sequence: &KeySequence,
+    client_pub: &flume::Sender<ClientRequest>,
+    state: &SharedState,
+    ui: &mut UIStateGuard,
+) -> Result<bool> {
+    let waiting = matches!(
+        state.data.read().logins.sign_in,
+        Some(crate::state::logins::SignIn::Waiting { .. })
+    );
+    let count = ui.count_prefix;
+    let PageState::Logins { selected, pasted } = ui.current_page_mut() else {
+        anyhow::bail!("expect a logins page");
+    };
+    if waiting && key_sequence.keys.len() == 1 {
+        return Ok(match &key_sequence.keys[0] {
+            Key::None(crossterm::event::KeyCode::Enter) => {
+                // with nothing typed, the address copied from the browser
+                let text = if pasted.is_empty() {
+                    get_clipboard_content().unwrap_or_default()
+                } else {
+                    pasted.get_text()
+                };
+                *pasted = LineInput::default();
+                client_pub.send(ClientRequest::FinishSignIn(crate::client::Pasted(text)))?;
+                true
+            }
+            Key::None(crossterm::event::KeyCode::Esc) => {
+                *pasted = LineInput::default();
+                client_pub.send(ClientRequest::CancelSignIn)?;
+                true
+            }
+            k => pasted.input(k).is_some(),
+        });
+    }
+    let selected = *selected;
+    match config::get_config()
+        .keymap_config
+        .find_command_or_action_from_key_sequence(key_sequence)
+    {
+        Some(CommandOrAction::Command(Command::ChooseSelected)) => {
+            if selected < state.data.read().logins.web_api.len() {
+                client_pub.send(ClientRequest::StartSignIn(selected))?;
+            }
+            Ok(true)
+        }
+        Some(CommandOrAction::Command(command)) => {
+            let len = state.data.read().logins.web_api.len();
+            Ok(handle_navigation_command(
+                command,
+                ui.current_page_mut(),
+                selected,
+                len,
+                count,
+            ))
+        }
+        _ => Ok(false),
+    }
 }
 
 fn handle_command_for_logs_page(command: Command, ui: &mut UIStateGuard) -> bool {

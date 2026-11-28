@@ -92,6 +92,7 @@ pub enum Command {
 
     CreatePlaylist,
     OpenLogs,
+    LoginsPage,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -378,6 +379,7 @@ impl Command {
             Self::CreatePlaylist => "create a new playlist",
             Self::VolumeChange { offset: _ } => unreachable!(),
             Self::OpenLogs => "go to the application logs page",
+            Self::LoginsPage => "go to the app's Spotify logins: when they end, and signing in again",
         }
         .to_string()
     }

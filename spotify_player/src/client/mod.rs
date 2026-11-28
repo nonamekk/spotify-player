@@ -30,6 +30,7 @@ use rspotify::{http::Query, prelude::*};
 
 mod handlers;
 mod liked_tracks;
+mod logins;
 mod middleware;
 mod request;
 pub mod soloist;
@@ -102,6 +103,8 @@ pub struct AppClient {
     stream_conn: Arc<Mutex<Option<librespot_connect::Spirc>>>,
     /// The device last chosen from this app, which `take_over_playback` leaves the playback on
     chosen_device_id: Arc<Mutex<Option<String>>>,
+    /// A sign-in started on the `g A` page, until it's finished or given up
+    sign_in: Arc<Mutex<Option<logins::PendingSignIn>>>,
     /// Held while a player request is sent, so requests reach Spotify in the order they were made
     player_request_order: Arc<tokio::sync::Mutex<()>>,
 }
@@ -207,6 +210,7 @@ impl AppClient {
             #[cfg(feature = "streaming")]
             stream_conn: Arc::new(Mutex::new(None)),
             chosen_device_id: Arc::new(Mutex::new(None)),
+            sign_in: Arc::new(Mutex::new(None)),
             player_request_order: Arc::default(),
         })
     }
@@ -893,6 +897,10 @@ impl AppClient {
                 self.delete_from_library(state, id).await?;
             }
             ClientRequest::TakePlayback => self.take_playback(state).await?,
+            ClientRequest::GetLogins => self.get_logins(state).await,
+            ClientRequest::StartSignIn(login) => self.start_sign_in(state, login)?,
+            ClientRequest::FinishSignIn(text) => self.finish_sign_in_pasted(state, &text.0).await,
+            ClientRequest::CancelSignIn => self.cancel_sign_in(state),
             ClientRequest::GetCurrentUserQueue => {
                 let queue = self.current_user_queue2().await?;
                 let upcoming: Vec<_> = {

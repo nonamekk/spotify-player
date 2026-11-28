@@ -9,7 +9,12 @@ url=https://soloist-builds.spotifycdn.com/soloist_release_x86_64.tar.gz
 dir=$HOME/.local/opt/soloist
 state=$HOME/.local/state/soloist-update
 mkdir -p "$state" "$dir"
-note() { echo "$1"; notify-send -a Soloist -i spotify "Spotify Soloist" "$1" 2>/dev/null || true; }
+# SOLOIST_UPDATE_NOTIFY=0 keeps the notices in the journal only
+note() {
+    echo "$1"
+    [[ ${SOLOIST_UPDATE_NOTIFY:-1} == 0 ]] && return
+    notify-send -a Soloist -i spotify "Spotify Soloist" "$1" 2>/dev/null || true
+}
 
 build_date() {   # "soloist 1.3.10.86 build 1795089742 (20261119) ..." -> 20261119
     "$1" --version 2>/dev/null | grep -oE '\(20[0-9]{6}\)' | tr -d '()'

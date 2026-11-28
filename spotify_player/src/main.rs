@@ -162,6 +162,15 @@ async fn start_app(state: &state::SharedState) -> Result<()> {
         }
     });
 
+    // tells the desktop once a day when a Spotify login is about to end
+    tokio::task::spawn({
+        let state = state.clone();
+        let client = client.clone();
+        async move {
+            client.notify_ending_logins(&state).await;
+        }
+    });
+
     // hands memory freed after bursts back to the system
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     std::thread::Builder::new()

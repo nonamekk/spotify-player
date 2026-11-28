@@ -281,6 +281,11 @@ fn is_playing(event: &serde_json::Value) -> bool {
 
 /// Name of the Spotify Connect device of a Soloist running on this machine: its `-n` argument
 pub fn local_device_name() -> Option<String> {
+    local_player().map(|(name, _)| name)
+}
+
+/// The device name and the binary of the Soloist player running on this machine
+fn local_player() -> Option<(String, std::path::PathBuf)> {
     std::fs::read_dir("/proc")
         .ok()?
         .filter_map(Result::ok)
@@ -288,7 +293,29 @@ pub fn local_device_name() -> Option<String> {
             std::fs::read_to_string(process.path().join("comm"))
                 .is_ok_and(|comm| comm.trim_end() == "soloist")
         })
-        .find_map(|process| device_name(&std::fs::read(process.path().join("cmdline")).ok()?))
+        .find_map(|process| {
+            let name = device_name(&std::fs::read(process.path().join("cmdline")).ok()?)?;
+            Some((name, std::fs::read_link(process.path().join("exe")).ok()?))
+        })
+}
+
+/// What the Soloist running on this machine says of its login and build, through its own
+/// commands; `None` when none runs
+pub fn login() -> Option<crate::state::logins::SoloistLogin> {
+    let (name, binary) = local_player()?;
+    let output = |args: &[&str]| {
+        std::process::Command::new(&binary)
+            .args(args)
+            .output()
+            .ok()
+            .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+            .unwrap_or_default()
+    };
+    Some(crate::state::logins::SoloistLogin {
+        name,
+        logged_in: output(&["ctl", "status"]).contains("logged in: yes"),
+        build_expires: crate::state::logins::soloist_build_expires(&output(&["--version"])),
+    })
 }
 
 /// The device name in a Soloist command line (NUL-separated arguments), if it's the player's

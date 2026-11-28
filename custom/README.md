@@ -22,6 +22,7 @@ Builds of [spotify-player](https://github.com/aome510/spotify-player) for Arch L
 | Soloist events | With a Spotify Soloist running on this machine, the app follows its playback through Soloist's local WebSocket API: track changes, pauses and positions show as they happen, also when they come from elsewhere, and a playback command checks Spotify once afterwards instead of twice. Starting a track sends the shuffle state again only on the app's own device, which needs it. |
 | Played history | With the listener below (which also presents Soloist as an MPRIS player), the recently played tracks page lists the tracks played on the Soloist device instead of Spotify's recently played tracks of every device. |
 | Other devices | `g d` shows the list playing now on any device (the phone may only show it), or else the list played last: a playlist, album, artist or the liked tracks, with its track selected. The whole list when Spotify gives it to this app; for the mixes and radios Spotify makes (which it refuses this app), the tracks played from it, the track it's at and Spotify's queue while it plays. Enter on the track the device plays moves its playback here with its position and queue; on another track it plays the list here from that track. `g D` lists the track another device plays first, then Spotify's recently played tracks of every device, newest first (Spotify counts a track once it has played 30 seconds, as the next one starts). Both pages are fetched again 3 seconds after each new track while they're shown. Nothing else is sent to the other device. |
+| Logins | `g A` shows when the app's Spotify logins end: Spotify ends a login 6 months after it was authorized, and refreshing doesn't extend it. The date is recorded at each sign-in (`Logins_cache.json`); for a login made before, it's when its token file was made. Enter on a login signs in again: the browser opens Spotify's page (the address is also copied to the clipboard), and the redirect back to the app finishes it; if the browser ends on a page that doesn't load, copy its address or code and press Enter in the app. The new token is used at once. From 5 days before a login ends, the app tells the desktop once a day while it runs, whatever `enable_notify` says (see [Notifications](#notifications)). The page also shows whether the Soloist on this machine is logged in and when its build expires; Soloist's pairing doesn't end. |
 | `played_history_size`, `played_history_min_played_secs` | Tracks kept in the played history (1500), and the time a track has to play to be listed (10 seconds). |
 | Startup | The app starts with the playback and the page it reopens on. The library (playlists, saved albums, followed artists, saved shows) and the liked tracks show what's cached, and are requested when the library or the liked tracks are opened; the liked tracks then only take the ones liked since, and tracks unliked in another app are found in the background with a few requests, a few seconds apart. The liked tracks are also refreshed in the background 6 seconds after startup and every 10 minutes while nothing plays (one request when nothing changed), for the liked marks. The account is cached too, and `spotify_player authenticate` clears the cached library and session when another account logs in. Upstream requests all of it on every start, a request per 50 liked tracks, which can run into Spotify's rate limit. |
 | Cover first | On a new track the cover loads before the artist's genres, which used to cost the cover a request to Spotify on every new artist. |
@@ -86,6 +87,31 @@ Why it's set up this way:
 - **A failed login says "make sure --api-key is valid"** even when the key is fine; it's usually the network.
 
 When nothing plays: `~/.local/opt/soloist/soloist ctl status` says whether it's logged in, `systemctl --user status soloist` shows exit code 10 for an expired build, and `journalctl --user -u soloist` the rest. A freshly started Soloist isn't the active device until the first play from the app.
+
+## Notifications
+
+The login notice of `g A` comes from the app name `spotify_player login`, and is shown whatever `enable_notify` says. Everything else can be turned off: the app's notifications of new tracks (`enable_notify`), and the notices of Soloist's updater (a new build, a build about to expire), which `SOLOIST_UPDATE_NOTIFY=0` keeps in its journal. To keep only the login notice:
+
+```sh
+# the app's own notifications off; its login notice stays
+conf=~/.config/spotify-player/app.toml
+mkdir -p "$(dirname "$conf")"
+touch "$conf"
+if grep -q '^enable_notify' "$conf"; then
+    sed -i 's/^enable_notify.*/enable_notify = false/' "$conf"
+else
+    # top-level keys go before the first [table]
+    sed -i '1i enable_notify = false' "$conf"
+fi
+
+# Soloist's updater: notices in its journal only (journalctl --user -u soloist-update)
+mkdir -p ~/.config/systemd/user/soloist-update.service.d
+printf '[Service]\nEnvironment=SOLOIST_UPDATE_NOTIFY=0\n' \
+    > ~/.config/systemd/user/soloist-update.service.d/quiet.conf
+systemctl --user daemon-reload
+```
+
+Restart the app for `enable_notify` to apply. The package is built without streaming, and the app only notifies of new tracks with streaming, so that part is already quiet there. A notification daemon that filters by app name can tell the login notice (`spotify_player login`) from the rest (`spotify_player`, `Soloist`).
 
 ## Played history
 
