@@ -1,0 +1,18 @@
+#!/bin/bash
+# Starts Spotify Soloist (official headless Spotify Connect player) as the device named
+# $SOLOIST_DEVICE_NAME, else this machine's host name.
+# Key: ~/.config/soloist/api.key (600). Binary: ~/.local/opt/soloist/soloist.
+# Extra args pass through (e.g. --pair). Soloist only takes the key as an argument,
+# so it is visible in this user's process list while running.
+# -w: local WebSocket API (events, queue) on a free port, written to <data-dir>/ws.port.
+set -eu
+key=$(<"$HOME/.config/soloist/api.key")
+name=${SOLOIST_DEVICE_NAME:-$(uname -n)}
+# Soloist logs in once when it starts and never retries. At login the network can still
+# be coming up, and a user service can't wait for network-online.target, so wait until
+# Spotify's address resolves (at most 60 s). soloist-check-login catches any other failure.
+for _ in $(seq 60); do
+    getent hosts apresolve.spotify.com >/dev/null && break
+    sleep 1
+done
+exec "$HOME/.local/opt/soloist/soloist" -n "$name" -k "$key" -z 2048 -w 127.0.0.1:0 "$@"

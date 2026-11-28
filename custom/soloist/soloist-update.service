@@ -1,0 +1,6 @@
+[Unit]
+Description=Update Spotify Soloist when Spotify publishes a new build
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/libexec/soloist-update

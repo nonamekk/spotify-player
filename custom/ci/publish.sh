@@ -3,14 +3,36 @@
 # the pacman repository kept as the assets of the `pacman-repo` release.
 set -euo pipefail
 cpu=$(sed -n 's/^_cpu=//p' "$(dirname "$(readlink -f "$0")")/PKGBUILD")
+case $cpu in
+  znver5) cpu_name="Zen 5" ;;
+  *) cpu_name=$cpu ;;
+esac
+readme="https://github.com/$GITHUB_REPOSITORY/blob/spotify-player-custom/custom/README.md"
 {
-  echo "Built with \`-C target-cpu=$cpu\`: it runs only on CPUs of that generation (\`znver5\` is Zen 5), other CPUs stop it with \"illegal instruction\"."
+  echo "Runs only on $cpu_name CPUs; other CPUs stop it with \"illegal instruction\"."
   echo
   echo "spotify-player ${TAG#v} ([upstream release](https://github.com/aome510/spotify-player/releases/tag/$TAG)) with these commits of \`spotify-player-custom\` ($GITHUB_SHA):"
   echo
   cat dist/commits.md
   echo
   echo "Install through the pacman repository (see \`custom/README.md\`), or once: \`sudo pacman -U <package URL>\`."
+  cat <<EOF
+
+<details>
+<summary>First install</summary>
+
+1. **The package.** Add the repository to \`/etc/pacman.conf\`, above \`[extra]\`, then run \`sudo pacman -Syu spotify-player\`:
+   \`\`\`ini
+   [spotify-player-custom]
+   SigLevel = Optional TrustAll
+   Server = https://github.com/$GITHUB_REPOSITORY/releases/download/pacman-repo
+   \`\`\`
+2. **The player.** Set up Spotify Soloist, Spotify's headless Connect player, as a user service with the files in \`custom/soloist/\`: see [Soloist]($readme#soloist). The package itself doesn't play anything.
+3. **The played history and media controls:** \`systemctl --user enable --now soloist-history\` (see [Played history]($readme#played-history)).
+4. **The app.** In \`~/.config/spotify-player/app.toml\`, set \`client_id\` to your own Spotify app's ([how](https://github.com/aome510/spotify-player#using-a-custom-client-id)), \`enable_streaming = "Never"\` and \`enable_media_control = false\` (soloist-history is the MPRIS player). Start \`spotify_player\` and log in once in the browser; it plays on the Soloist device by itself.
+
+</details>
+EOF
 } > notes.md
 gh release create "$RELEASE" dist/*.pkg.tar.zst --repo "$GITHUB_REPOSITORY" \
   --target "$GITHUB_SHA" --title "spotify-player ${TAG#v}, custom, $cpu" --notes-file notes.md

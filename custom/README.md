@@ -5,6 +5,7 @@ Builds of [spotify-player](https://github.com/aome510/spotify-player) for Arch L
 | Path | What it is |
 |---|---|
 | `soloist_history/`, `custom/soloist-history.service` | The played history: its record format, shared with the app, and the `soloist-history` listener with its user service (see [Played history](#played-history)), installed by the package |
+| `custom/soloist/` | A Spotify Soloist setup as user services: its launcher, login check, updater and their units (see [Soloist](#soloist)); not installed by the package |
 | `custom/ci/` | The release announcement (`announce.sh`), the checks (`check.sh`) and the build: `plan.sh`, `rebase.sh`, `build.sh` with `container-build.sh` and `PKGBUILD`, `publish.sh` |
 | `.github/workflows/` | `upstream_release.yml` announces new releases; `spotify_player_custom.yml` builds when started by hand. Both run `custom/ci/` scripts; GitHub only runs workflows from that folder |
 
@@ -49,6 +50,42 @@ The build workflow runs only when started by hand; its schedule and push trigger
 2. The `build` job cherry-picks this branch's own commits onto the requested release, the latest by default (`custom/ci/rebase.sh`). On a branch rebased onto that release they apply as they are.
 3. It builds `custom/ci/PKGBUILD` (Arch's `extra/spotify-player` without streaming, which a Soloist device does, with the `pixelate` feature and the listener added, built for Zen 5, `pkgrel=1.<run number>` so that every build is an upgrade for pacman, also a rebuild of the same release) in an `archlinux:base-devel` container (`custom/ci/build.sh`, `custom/ci/container-build.sh`).
 4. The `release` job (`custom/ci/publish.sh`) publishes the package as release `spotify-player-<version>-custom-znver5.<id>` (the CPU from the PKGBUILD's `_cpu`, also in its title), with the applied commits in its notes, and replaces the package and database in the `pacman-repo` release, which is the pacman repository.
+
+## Soloist
+
+Spotify Soloist is Spotify's own headless Spotify Connect player ([documentation](https://developer.spotify.com/documentation/soloist)). The package doesn't play anything itself (it's built without streaming): the app controls a Soloist running on the same machine, and finds it by itself (`preferred_device`). `custom/soloist/` runs Soloist as a user service; Soloist itself is Spotify's binary, which the updater downloads.
+
+| File | Installed as | What it does |
+|---|---|---|
+| `soloist-run` | `~/.local/libexec/` | Waits until DNS works, then starts Soloist with the key, the device name and the local WebSocket API |
+| `soloist-check-login` | `~/.local/libexec/` | Fails the start if Soloist isn't logged in within 30 s, so systemd restarts it |
+| `soloist-update` | `~/.local/libexec/` | Installs a new build when Spotify publishes one, and warns before the current one expires |
+| `soloist.service` | `~/.config/systemd/user/` | The player |
+| `soloist-update.service`, `soloist-update.timer` | `~/.config/systemd/user/` | The daily update check |
+
+Setup:
+
+1. Copy the three scripts to `~/.local/libexec/` (executable).
+2. Run `~/.local/libexec/soloist-update` once: it downloads the current build to `~/.local/opt/soloist/`.
+3. Save your Soloist API key (from the [developer dashboard](https://developer.spotify.com/dashboard)) in `~/.config/soloist/api.key`, and `chmod 600` it.
+4. Pair once: `~/.local/libexec/soloist-run --pair` (with `SOLOIST_DEVICE_NAME=<name>` in front if you'll name the device), then pick the device in a Spotify app on the same network. Soloist exits once it's authenticated. Pairing uses LAN discovery (mDNS on UDP 5353 and a random TCP port), so a firewall has to let that through while pairing.
+5. Copy the three units to `~/.config/systemd/user/` (the updater would otherwise start Soloist before it's paired). To name the device, uncomment `Environment=SOLOIST_DEVICE_NAME=` in `soloist.service`; without it, it's the host name. Then `systemctl --user daemon-reload && systemctl --user enable --now soloist.service soloist-update.timer`.
+6. Optional, lossless: stop the service, add these lines to `~/.local/share/soloist/settings/Users/<user>-user/prefs` (it appears after the first login), and start it again. Soloist writes its prefs when it stops, so an edit while it runs is lost. Soloist has no quality option, and streams 160 kbit/s otherwise.
+   ```
+   audio.play_bitrate_enumeration=5
+   audio.play_bitrate_non_metered_enumeration=5
+   audio.sync_bitrate_enumeration=5
+   ```
+
+Why it's set up this way:
+
+- **The DNS wait and the login check.** Soloist logs in once when it starts and never retries, so a start before the network is up leaves it running but logged out. A user service can't wait for `network-online.target` (the user's systemd instance can't see system targets), so `soloist-run` waits until `apresolve.spotify.com` resolves, and `soloist-check-login` fails the start if Soloist still isn't logged in after 30 s; `Restart=on-failure` then starts it again.
+- **Builds expire** 90 days after their build date, and Soloist then exits with code 10. `RestartPreventExitStatus=10` keeps that from looping, and `OnFailure=soloist-update.service` installs the new build and starts the service again. Spotify publishes builds at one fixed URL, so the updater compares its ETag.
+- **`-w 127.0.0.1:0`** is the local WebSocket API on a free port (written to `~/.local/share/soloist/ws.port`), which the app and `soloist-history` follow. **`-z 2048`** caps Soloist's cache at 2 GB; it has no limit otherwise.
+- **The key is visible in `ps`**: Soloist only takes it as an argument.
+- **A failed login says "make sure --api-key is valid"** even when the key is fine; it's usually the network.
+
+When nothing plays: `~/.local/opt/soloist/soloist ctl status` says whether it's logged in, `systemctl --user status soloist` shows exit code 10 for an expired build, and `journalctl --user -u soloist` the rest. A freshly started Soloist isn't the active device until the first play from the app.
 
 ## Played history
 

@@ -1,0 +1,50 @@
+#!/bin/bash
+# Keeps Spotify Soloist current. Soloist builds expire 90 days after their build
+# date (exit code 10); Spotify publishes only a fixed URL, so the ETag tells us
+# when a new build is out. Run daily by soloist-update.timer and on service failure.
+#   - new build: download, check it runs, swap it in, restart soloist.service, notify
+#   - no new build and < 10 days left: notify once a day
+set -u
+url=https://soloist-builds.spotifycdn.com/soloist_release_x86_64.tar.gz
+dir=$HOME/.local/opt/soloist
+state=$HOME/.local/state/soloist-update
+mkdir -p "$state" "$dir"
+note() { echo "$1"; notify-send -a Soloist -i spotify "Spotify Soloist" "$1" 2>/dev/null || true; }
+
+build_date() {   # "soloist 1.3.10.86 build 1795089742 (20261119) ..." -> 20261119
+    "$1" --version 2>/dev/null | grep -oE '\(20[0-9]{6}\)' | tr -d '()'
+}
+
+etag=$(curl -fsSI --max-time 30 "$url" | tr -d '\r' | awk -F': ' 'tolower($1)=="etag"{print $2}')
+if [[ -z $etag ]]; then
+    echo "could not reach $url"
+elif [[ $etag != "$(cat "$state/etag" 2>/dev/null)" ]]; then
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' EXIT
+    if curl -fsS --max-time 300 -o "$tmp/s.tar.gz" "$url" \
+       && tar xzf "$tmp/s.tar.gz" -C "$tmp" soloist CHANGELOG.md \
+       && new=$(build_date "$tmp/soloist") && [[ -n $new ]]; then
+        old=$(build_date "$dir/soloist")
+        if [[ $new > ${old:-0} ]]; then
+            [[ -e $dir/soloist ]] && cp -f "$dir/soloist" "$dir/soloist.prev"
+            install -m755 "$tmp/soloist" "$dir/soloist.new" && mv -f "$dir/soloist.new" "$dir/soloist"
+            install -m644 "$tmp/CHANGELOG.md" "$dir/CHANGELOG.md"
+            systemctl --user try-restart soloist.service
+            systemctl --user is-active -q soloist.service || systemctl --user start soloist.service
+            note "Updated to build $new ($("$dir/soloist" --version | awk '{print $2}'))."
+        fi
+        echo "$etag" > "$state/etag"
+    else
+        echo "download or check of the new build failed; keeping the current one"
+    fi
+fi
+
+cur=$(build_date "$dir/soloist")
+if [[ -n $cur ]]; then
+    expires=$(date -d "$cur +90 days" +%F)
+    left=$(( ( $(date -d "$expires" +%s) - $(date +%s) ) / 86400 ))
+    echo "build $cur expires $expires ($left days left)"
+    if (( left < 10 )); then
+        note "Build $cur expires $expires ($left days left) and Spotify has no newer one yet."
+    fi
+fi

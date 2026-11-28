@@ -1,0 +1,22 @@
+[Unit]
+Description=Spotify Soloist (official headless Spotify Connect player)
+Documentation=https://developer.spotify.com/documentation/soloist
+After=pipewire.service pipewire-pulse.service
+Wants=pipewire.service
+# A build that expired (exit 10) gets replaced by the updater, which restarts this
+OnFailure=soloist-update.service
+
+[Service]
+# The device name Spotify apps show; without it, the host name
+#Environment=SOLOIST_DEVICE_NAME=Living room
+# Waits for DNS first: user services can't order after network-online.target
+ExecStart=%h/.local/libexec/soloist-run
+# Fails the start when the login didn't work, so the restart below retries it
+ExecStartPost=%h/.local/libexec/soloist-check-login
+Restart=on-failure
+RestartSec=10
+# 10 = build expired: don't loop; OnFailure runs the updater instead
+RestartPreventExitStatus=10
+
+[Install]
+WantedBy=default.target
