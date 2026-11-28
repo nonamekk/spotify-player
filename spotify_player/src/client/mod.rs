@@ -226,8 +226,19 @@ impl AppClient {
                 // a retry logic is implemented to ensure the application's state is properly initialized
                 let max_retries = 3;
                 let mut selected_playing = false;
-                for i in 0..max_retries {
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                // a device reconnecting to Spotify, as after a resume from hibernation, is listed
+                // again only after a while: with none listed, look again until `DEVICE_WAIT`
+                let started = std::time::Instant::now();
+                let mut no_device = false;
+                let mut i = 0;
+                while i < max_retries || (no_device && started.elapsed() < DEVICE_WAIT) {
+                    let wait = if i < max_retries {
+                        std::time::Duration::from_secs(1)
+                    } else {
+                        DEVICE_WAIT_INTERVAL
+                    };
+                    i += 1;
+                    tokio::time::sleep(wait).await;
 
                     if let Err(err) = client.retrieve_current_playback(&state, false).await {
                         tracing::error!("Failed to retrieve current playback: {err:#}");
@@ -243,10 +254,11 @@ impl AppClient {
                     // if playback exists, don't connect to a new device
                     if state.player.read().playback.is_some() {
                         tracing::info!("Playback already exists, skipping device connection.");
+                        no_device = false;
                         continue;
                     }
 
-                    let id = match client.find_available_device(&state).await {
+                    let id = match client.find_available_device().await {
                         Ok(Some(id)) => Some(Cow::Owned(id)),
                         Ok(None) => None,
                         Err(err) => {
@@ -254,6 +266,7 @@ impl AppClient {
                             None
                         }
                     };
+                    no_device = id.is_none();
 
                     if let Some(device_id) = id {
                         tracing::info!(
@@ -286,6 +299,11 @@ impl AppClient {
                             break;
                         }
                     }
+                }
+                if no_device {
+                    tracing::warn!(
+                        "No device to connect to after {DEVICE_WAIT:?}; starting a track looks again"
+                    );
                 }
             }
         });
@@ -423,7 +441,17 @@ impl AppClient {
                 if let (Some(shuffle), Some(playback)) = (shuffle, playback.as_mut()) {
                     playback.shuffle_state = shuffle;
                 }
-                let device_id = playback.as_ref().and_then(|p| p.device_id.as_deref());
+                // with no playback, e.g. after a resume from hibernation, Spotify has no device
+                // to start on unless one is given
+                let found;
+                let device_id =
+                    if let Some(id) = playback.as_ref().and_then(|p| p.device_id.as_deref()) {
+                        id
+                    } else {
+                        found = self.connect_to_available_device().await?;
+                        found.as_str()
+                    };
+                let device_id = Some(device_id);
                 self.start_playback(p, device_id).await?;
                 // For some reasons, when starting a new playback, the integrated `spotify_player`
                 // client doesn't respect the initial shuffle state, so we need to manually update the state
@@ -1099,8 +1127,7 @@ impl AppClient {
     }
 
     /// Find an available device. If found, return the device's ID.
-    #[cfg_attr(not(feature = "streaming"), allow(unused_variables))]
-    async fn find_available_device(&self, state: &SharedState) -> Result<Option<String>> {
+    async fn find_available_device(&self) -> Result<Option<String>> {
         let devices = self.available_devices().await?;
 
         // if there is an active device, return it
@@ -1114,8 +1141,9 @@ impl AppClient {
             .filter_map(Device::try_from_device)
             .collect::<Vec<_>>();
 
+        // the streaming connection is made, before this is called, when streaming is enabled
         #[cfg(feature = "streaming")]
-        if state.is_streaming_enabled() {
+        if self.stream_conn.lock().is_some() {
             self.ensure_integrated_device(&mut devices).await;
         }
 
@@ -1136,6 +1164,18 @@ impl AppClient {
         Ok(Some(devices.remove(id).id))
     }
 
+    /// Connect to the device `find_available_device` picks, for a playback started while there
+    /// is none, e.g. after a resume from hibernation, when the startup found no device
+    async fn connect_to_available_device(&self) -> Result<String> {
+        let device_id = self
+            .find_available_device()
+            .await?
+            .context("Spotify lists no device to play on (is the player device running?)")?;
+        self.transfer_playback(&device_id, Some(false)).await?;
+        tracing::info!(%device_id, "Connected to a device to start the playback on");
+        Ok(device_id)
+    }
+
     /// Ensures the integrated librespot device (of *this* running instance) is present in `devices`.
     ///
     /// The integrated device may not show up in the device list returned by the Spotify API because
@@ -1145,8 +1185,8 @@ impl AppClient {
     ///    By default, the application uses Spotify web app's client ID, which doesn't have
     ///    access to user's active devices.
     ///
-    /// Callers must check [`SharedState::is_streaming_enabled`] first. The `streaming` feature
-    /// being compiled in does not mean *this* instance runs an integrated player: with
+    /// Callers must check that this instance has a streaming connection first. The `streaming`
+    /// feature being compiled in does not mean *this* instance runs an integrated player: with
     /// `enable_streaming = "DaemonOnly"` only the daemon does, so a non-daemon instance would
     /// otherwise advertise a device that does not exist.
     #[cfg(feature = "streaming")]
@@ -2737,6 +2777,10 @@ const CONTINUE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs
 /// How long after a new track the `g D` and `g d` pages are fetched again, so Spotify has
 /// counted the track before it
 const DEVICE_PAGES_REFRESH_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
+/// How long the startup keeps looking for a device while Spotify lists none
+const DEVICE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+/// Wait between those looks, after the first three
+const DEVICE_WAIT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// The playback and queue shown before a player request showed the track it plays
 type ShownBefore = (
